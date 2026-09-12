@@ -25,7 +25,10 @@ kamui my-dev-server
 # Direct IP address
 kamui narasaka@192.168.1.50
 
-# Tailscale MagicDNS name
+# Tailscale MagicDNS machine name (resolved automatically)
+kamui narasaka@monitoring
+
+# Full Tailscale MagicDNS name
 kamui narasaka@monitoring.yak-bebop.ts.net
 
 # Ordinary DNS hostname
@@ -33,8 +36,10 @@ kamui narasaka@dev.example.com
 ```
 
 Each value after `kamui` is an OpenSSH destination, not a Kamui subcommand.
-`my-dev-server` is an example SSH alias; the IP-address, MagicDNS, and ordinary
-hostname forms work directly without defining an alias first.
+`my-dev-server` is an example SSH alias. With MagicDNS enabled, Tailscale
+automatically resolves a machine name such as `monitoring`, so it needs no
+matching entry in `~/.ssh/config`. IP addresses, full MagicDNS names, and
+ordinary hostnames also work directly.
 
 Kamui starts its own non-interactive OpenSSH transport, an ephemeral local
 proxy, and an isolated development-browser profile. It does not need an
