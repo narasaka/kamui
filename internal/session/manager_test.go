@@ -171,6 +171,15 @@ func TestManagerLaunchesSelectedBrowserAndOpensURLsInItsProfile(t *testing.T) {
 		t.Fatalf("browser = %q, want chrome", ensured.Session.Browser)
 	}
 	if _, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination,
+		Browser: browser.Selection{Explicit: "chrome"},
+	}); err != nil {
+		t.Fatalf("repeated ensure: %v", err)
+	}
+	if got := browserLauncher.count(); got != 1 {
+		t.Fatalf("browser launches after repeated ensure = %d, want 1", got)
+	}
+	if _, err := manager.Execute(context.Background(), session.Command{
 		Operation:   session.Open,
 		Destination: destination,
 		URLs:        []string{"http://localhost:3003"},
