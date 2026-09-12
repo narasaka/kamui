@@ -98,7 +98,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		}
 	}
 	if request.Operation == PrintSSHConfig {
-		return Result{Output: fmt.Sprintf("Host %s\n    PermitLocalCommand yes\n    LocalCommand kamui ssh-hook %%n\n", destination)}, nil
+		return Result{Output: fmt.Sprintf("# %%n preserves the original SSH alias supplied to OpenSSH.\nHost %s\n    PermitLocalCommand yes\n    LocalCommand kamui ssh-hook %%n\n", destination)}, nil
 	}
 	if request.Operation == Doctor {
 		return a.runDoctor(ctx, destination, request.JSON)

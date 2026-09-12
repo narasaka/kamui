@@ -28,7 +28,7 @@ func TestPrintSSHConfigReturnsSnippetWithoutStartingController(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute returned error: %v", err)
 	}
-	want := "Host reyna\n    PermitLocalCommand yes\n    LocalCommand kamui ssh-hook %n\n"
+	want := "# %n preserves the original SSH alias supplied to OpenSSH.\nHost reyna\n    PermitLocalCommand yes\n    LocalCommand kamui ssh-hook %n\n"
 	if result.Output != want {
 		t.Fatalf("snippet = %q, want %q", result.Output, want)
 	}
