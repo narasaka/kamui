@@ -55,6 +55,34 @@ func TestPlannedCommandsReturnExplicitNotImplementedErrors(t *testing.T) {
 	}
 }
 
+func TestNoArgumentsShowsCommandHelp(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	command := cliapp.NewCommand(cliapp.Streams{Out: &output, ErrOut: &output})
+	if err := command.Run(context.Background(), []string{"kamui"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := output.String()
+	for _, want := range []string{
+		"USAGE:\n",
+		"COMMANDS:\n",
+		"logs              show OpenSSH background diagnostics\n",
+		"status            show session status\n",
+		"stop              stop one or all sessions\n",
+		"open              open URLs in a session browser\n",
+		"doctor            diagnose SSH connectivity\n",
+		"browsers          list detected supported browsers\n",
+		"ssh-hook          activate a session from OpenSSH\n",
+		"print-ssh-config  print an OpenSSH LocalCommand snippet\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("help output = %q, want substring %q", got, want)
+		}
+	}
+}
+
 func TestLogsPrintsTheRequestedNumberOfRecentOpenSSHDiagnostics(t *testing.T) {
 	t.Parallel()
 
@@ -76,7 +104,7 @@ func TestLogsPrintsTheRequestedNumberOfRecentOpenSSHDiagnostics(t *testing.T) {
 	}
 }
 
-func TestVersionFlagReportsBuildVersion(t *testing.T) {
+func TestVersionFlagReportsDevelopmentVersion(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
@@ -84,7 +112,7 @@ func TestVersionFlagReportsBuildVersion(t *testing.T) {
 	if err := command.Run(context.Background(), []string{"kamui", "--version"}); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := stdout.String(), "kamui version dev\n"; got != want {
+	if got, want := stdout.String(), "dev\n"; got != want {
 		t.Fatalf("version output = %q, want %q", got, want)
 	}
 }
@@ -138,6 +166,37 @@ func TestVerboseStatusIncludesLastTunnelError(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("verbose status output = %q, want substring %q", got, want)
 		}
+	}
+}
+
+func TestStopWithoutDestinationSuggestsKnownSessions(t *testing.T) {
+	t.Parallel()
+
+	application, _, _ := runningStatusApplication(t)
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+	err := command.Run(context.Background(), []string{"kamui", "stop"})
+	want := "Choose a session to stop:\n\n  reyna  connected\n\nRun `kamui stop SSH_DESTINATION` or `kamui stop --all`."
+	if got := fmt.Sprint(err); got != want {
+		t.Fatalf("stop error = %q, want %q", got, want)
+	}
+}
+
+func TestStopWithoutDestinationReportsWhenNoSessionsExist(t *testing.T) {
+	t.Parallel()
+
+	application, _, _ := runningStatusApplication(t)
+	if _, err := application.Execute(context.Background(), kamuiapp.Request{
+		Operation: kamuiapp.Stop, Destination: "reyna",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+	err := command.Run(context.Background(), []string{"kamui", "stop"})
+	if got, want := fmt.Sprint(err), "No sessions to stop."; got != want {
+		t.Fatalf("stop error = %q, want %q", got, want)
 	}
 }
 

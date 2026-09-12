@@ -15,6 +15,6 @@ class Kamui < Formula
   end
 
   test do
-    assert_match "kamui version", shell_output("#{bin}/kamui --version")
+    assert_equal "v#{version}\n", shell_output("#{bin}/kamui --version")
   end
 end
