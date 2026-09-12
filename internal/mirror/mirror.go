@@ -17,7 +17,10 @@ import (
 // DefaultReconcileInterval is deliberately conservative: it notices normal
 // development-server changes promptly without continuously spawning remote
 // discovery commands.
-const DefaultReconcileInterval = 2 * time.Second
+const DefaultReconcileInterval = 5 * time.Second
+
+// DefaultDiscoveryTimeout bounds each remote ss subprocess.
+const DefaultDiscoveryTimeout = 10 * time.Second
 
 // Discoverer finds TCP ports currently listening on one SSH destination.
 type Discoverer interface {
@@ -32,6 +35,7 @@ type DialFunc func(context.Context, string, string) (net.Conn, error)
 // DefaultReconcileInterval.
 type Options struct {
 	ReconcileInterval time.Duration
+	DiscoveryTimeout  time.Duration
 }
 
 // Conflict describes a desired remote port that could not be claimed locally.
@@ -50,12 +54,13 @@ type Status struct {
 
 // Running continuously reconciles one destination's listeners.
 type Running struct {
-	ctx         context.Context
-	cancel      context.CancelFunc
-	destination string
-	discoverer  Discoverer
-	dial        DialFunc
-	interval    time.Duration
+	ctx              context.Context
+	cancel           context.CancelFunc
+	destination      string
+	discoverer       Discoverer
+	dial             DialFunc
+	interval         time.Duration
+	discoveryTimeout time.Duration
 
 	mu               sync.Mutex
 	forwards         map[uint16]*portForward
@@ -80,10 +85,17 @@ func Start(ctx context.Context, destination string, discoverer Discoverer, dial 
 	if interval < 0 {
 		return nil, fmt.Errorf("mirror reconciliation interval must be positive")
 	}
+	discoveryTimeout := options.DiscoveryTimeout
+	if discoveryTimeout == 0 {
+		discoveryTimeout = DefaultDiscoveryTimeout
+	}
+	if discoveryTimeout < 0 {
+		return nil, fmt.Errorf("mirror discovery timeout must be positive")
+	}
 	runningContext, cancel := context.WithCancel(ctx)
 	running := &Running{
 		ctx: runningContext, cancel: cancel, destination: destination,
-		discoverer: discoverer, dial: dial, interval: interval,
+		discoverer: discoverer, dial: dial, interval: interval, discoveryTimeout: discoveryTimeout,
 		forwards: make(map[uint16]*portForward), conflicts: make(map[uint16]string), forwardingErrors: make(map[uint16]error), done: make(chan struct{}),
 	}
 	running.reconcile()
@@ -106,7 +118,9 @@ func (r *Running) loop() {
 }
 
 func (r *Running) reconcile() {
-	ports, err := r.discoverer.ListeningPorts(r.ctx, r.destination)
+	discoveryContext, cancel := context.WithTimeout(r.ctx, r.discoveryTimeout)
+	ports, err := r.discoverer.ListeningPorts(discoveryContext, r.destination)
+	cancel()
 	if err != nil {
 		r.mu.Lock()
 		if !r.closed {
@@ -125,22 +139,37 @@ func (r *Running) reconcile() {
 	}
 
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if r.closed {
+		r.mu.Unlock()
 		return
 	}
 	r.lastError = err
+	removed := make(map[uint16]*portForward)
 	for port, forward := range r.forwards {
 		if _, ok := desired[port]; ok {
 			continue
 		}
-		delete(r.forwards, port)
-		delete(r.forwardingErrors, port)
-		forward.close()
+		removed[port] = forward
 	}
 	for port := range r.conflicts {
 		if _, ok := desired[port]; !ok {
 			delete(r.conflicts, port)
+		}
+	}
+	r.mu.Unlock()
+	for _, forward := range removed {
+		_ = forward.close()
+	}
+
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return
+	}
+	for port, forward := range removed {
+		if r.forwards[port] == forward {
+			delete(r.forwards, port)
+			delete(r.forwardingErrors, port)
 		}
 	}
 	ordered := make([]uint16, 0, len(desired))
@@ -161,6 +190,7 @@ func (r *Running) reconcile() {
 		r.forwards[port] = forward
 		delete(r.conflicts, port)
 	}
+	r.mu.Unlock()
 }
 
 // Status returns a sorted snapshot safe for display or wire transport.
@@ -191,6 +221,9 @@ func (r *Running) recordForwardingError(port uint16, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
+		return
+	}
+	if r.forwards[port] == nil {
 		return
 	}
 	if err == nil {

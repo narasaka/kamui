@@ -3,6 +3,7 @@ package mirror_test
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -204,10 +205,76 @@ func TestForwardingFailureIsVisibleInStatus(t *testing.T) {
 	}
 }
 
+func TestListenerDisappearsWhileForwardDialIsBlocked(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	discoverer := &mutableDiscoverer{ports: []uint16{port}}
+	dialStarted := make(chan struct{})
+	var once sync.Once
+	running, err := mirror.Start(context.Background(), "reyna", discoverer, func(ctx context.Context, _, _ string) (net.Conn, error) {
+		once.Do(func() { close(dialStarted) })
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}, mirror.Options{ReconcileInterval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := net.DialTimeout("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	select {
+	case <-dialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("forward dial did not start")
+	}
+	discoverer.set()
+	waitForMirrorStatus(t, running, func(status mirror.Status) bool { return len(status.MirroredPorts) == 0 })
+	closed := make(chan error, 1)
+	go func() { closed <- running.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mirror shutdown deadlocked behind a removed listener")
+	}
+}
+
+func TestDiscoverySubprocessIsBoundedByTimeout(t *testing.T) {
+	t.Parallel()
+
+	started := time.Now()
+	running, err := mirror.Start(context.Background(), "reyna", blockingDiscoverer{}, unreachableDial, mirror.Options{
+		ReconcileInterval: time.Second,
+		DiscoveryTimeout:  20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("initial discovery took %v, want bounded timeout", elapsed)
+	}
+	if status := running.Status(); status.LastError == nil || !errors.Is(status.LastError, context.DeadlineExceeded) {
+		t.Fatalf("status error = %v, want discovery deadline", status.LastError)
+	}
+}
+
 type mutableDiscoverer struct {
 	mu    sync.Mutex
 	ports []uint16
 	err   error
+}
+
+type blockingDiscoverer struct{}
+
+func (blockingDiscoverer) ListeningPorts(ctx context.Context, _ string) ([]uint16, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func (d *mutableDiscoverer) ListeningPorts(context.Context, string) ([]uint16, error) {
