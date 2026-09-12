@@ -7,12 +7,12 @@ import (
 	"fmt"
 	"net"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
+	"github.com/narasaka/kamui/internal/ssh"
 )
 
 type diagnostic struct {
@@ -23,20 +23,17 @@ type diagnostic struct {
 
 func (a *Application) runDoctor(ctx context.Context, destination session.Destination, jsonOutput bool) (Result, error) {
 	checks := make([]diagnostic, 0, 7)
-	sshPath, err := exec.LookPath("ssh")
+	sshDiagnostics := ssh.Diagnostics{}
+	sshPath, err := sshDiagnostics.Executable()
 	checks = append(checks, diagnosticResult("SSH executable", err, sshPath))
 	if err == nil {
 		connectContext, cancel := context.WithTimeout(ctx, 4*time.Second)
-		command := exec.CommandContext(connectContext, sshPath,
-			"-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=3",
-			"-o", "PermitLocalCommand=no", destination.String(), "exit")
-		output, connectErr := command.CombinedOutput()
+		output, connectErr := sshDiagnostics.Connectivity(connectContext, sshPath, destination.String())
 		cancel()
-		checks = append(checks, diagnosticResult("SSH connectivity", connectErr, concise(string(output))))
+		checks = append(checks, diagnosticResult("SSH connectivity", connectErr, concise(output)))
 
-		configCommand := exec.CommandContext(ctx, sshPath, "-G", "-o", "PermitLocalCommand=no", destination.String())
-		configOutput, configErr := configCommand.Output()
-		if configErr == nil && strings.Contains(strings.ToLower(string(configOutput)), "forwardagent yes") {
+		forwarded, configErr := sshDiagnostics.AgentForwarding(ctx, sshPath, destination.String())
+		if configErr == nil && forwarded {
 			checks = append(checks, diagnostic{Name: "SSH agent forwarding", Status: "warn", Details: "enabled by OpenSSH configuration"})
 		}
 	} else {

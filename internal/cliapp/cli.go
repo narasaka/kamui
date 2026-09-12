@@ -183,7 +183,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 					return notImplemented("ssh-hook")
 				}
 				_, err := application.Execute(ctx, kamuiapp.Request{
-					Operation: kamuiapp.SSHHook, Destination: cmd.Args().First(), Verbose: cmd.Bool("verbose"),
+					Operation: kamuiapp.SSHHook, Destination: cmd.Args().First(),
 				})
 				if err == nil && cmd.Bool("verbose") {
 					_, err = fmt.Fprintf(streams.Out, "Kamui activation requested for %s\n", cmd.Args().First())
@@ -239,31 +239,6 @@ func sessionState(state session.SessionState) string {
 		return "authentication-required"
 	default:
 		return "unavailable"
-	}
-}
-
-type argumentValidator func(*cli.Command) error
-
-func destinationAction(operation string, validate argumentValidator) cli.ActionFunc {
-	return func(_ context.Context, cmd *cli.Command) error {
-		if err := validate(cmd); err != nil {
-			return err
-		}
-		if cmd.NArg() == 1 {
-			if _, err := session.ParseDestination(cmd.Args().First()); err != nil {
-				return err
-			}
-		}
-		return notImplemented(operation)
-	}
-}
-
-func notImplementedAction(operation string, validate argumentValidator) cli.ActionFunc {
-	return func(_ context.Context, cmd *cli.Command) error {
-		if err := validate(cmd); err != nil {
-			return err
-		}
-		return notImplemented(operation)
 	}
 }
 

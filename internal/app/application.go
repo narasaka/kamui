@@ -39,7 +39,6 @@ type Request struct {
 	URLs        []string
 	All         bool
 	JSON        bool
-	Verbose     bool
 }
 
 // Result is the observable command result.
@@ -149,19 +148,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	}
 	result, err := call()
 	if err == nil {
-		if request.Operation == Ensure && result.Session.Browser != "" {
-			if err := a.layout.RememberBrowser(destination, result.Session.Browser); err != nil {
-				return Result{}, fmt.Errorf("remember browser selection: %w", err)
-			}
-		}
-		showWarning := false
-		if request.Operation == Ensure {
-			showWarning, err = a.layout.TakeFirstRunWarning()
-			if err != nil {
-				return Result{}, err
-			}
-		}
-		return Result{Result: result, ShowSecurityWarning: showWarning}, nil
+		return a.completeResult(destination, request.Operation, result)
 	}
 	if !controllerUnavailable(err) {
 		return Result{}, err
@@ -177,19 +164,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	for {
 		result, err = call()
 		if err == nil {
-			if request.Operation == Ensure && result.Session.Browser != "" {
-				if err := a.layout.RememberBrowser(destination, result.Session.Browser); err != nil {
-					return Result{}, fmt.Errorf("remember browser selection: %w", err)
-				}
-			}
-			showWarning := false
-			if request.Operation == Ensure {
-				showWarning, err = a.layout.TakeFirstRunWarning()
-				if err != nil {
-					return Result{}, err
-				}
-			}
-			return Result{Result: result, ShowSecurityWarning: showWarning}, nil
+			return a.completeResult(destination, request.Operation, result)
 		}
 		if !controllerUnavailable(err) {
 			return Result{}, err
@@ -202,6 +177,23 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		case <-ticker.C:
 		}
 	}
+}
+
+func (a *Application) completeResult(destination session.Destination, operation Operation, result session.Result) (Result, error) {
+	if operation == Ensure && result.Session.Browser != "" {
+		if err := a.layout.RememberBrowser(destination, result.Session.Browser); err != nil {
+			return Result{}, fmt.Errorf("remember browser selection: %w", err)
+		}
+	}
+	showWarning := false
+	if operation == Ensure {
+		var err error
+		showWarning, err = a.layout.TakeFirstRunWarning()
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	return Result{Result: result, ShowSecurityWarning: showWarning}, nil
 }
 
 func sessionOperation(operation Operation, all bool) (session.Operation, error) {
