@@ -52,4 +52,4 @@ jobs:
         env:
           KAMUI_BROWSER_TESTS: "1"
           KAMUI_REQUIRED_BROWSERS: "chrome,brave,firefox,firefox-developer-edition,zen,librewolf,floorp"
-        run: go test -race ./integration -run TestInstalledBrowsersUseKamuiProxy -count=1 -v
+        run: go test -race ./integration -run 'TestInstalledBrowsersUseKamuiProxy|TestChrome' -count=1 -v

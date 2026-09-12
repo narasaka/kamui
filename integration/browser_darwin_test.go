@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -248,6 +249,112 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(first+"|"+sec
 	if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
 		t.Fatalf("HMR-style reconnect gate: %v", err)
 	}
+}
+
+func TestChromeUsesSeveralRemoteLoopbackTabsSimultaneously(t *testing.T) {
+	if os.Getenv("KAMUI_BROWSER_TESTS") != "1" {
+		t.Skip("set KAMUI_BROWSER_TESTS=1 to launch installed browsers headlessly")
+	}
+	const chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+	if _, err := os.Stat(chromePath); err != nil {
+		t.Skip("Chrome is not installed")
+	}
+	hits := make(chan string, 4)
+	servers := make([]*httptest.Server, 4)
+	for index := range servers {
+		index := index
+		servers[index] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits <- fmt.Sprintf("tab-%d", index)
+			fmt.Fprintf(w, "tab-%d", index)
+		}))
+		defer servers[index].Close()
+	}
+	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	defer manager.Close()
+	destination, _ := session.ParseDestination("browser-tabs-gate")
+	result, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabs := make([]string, 0, len(servers))
+	for _, server := range servers {
+		tabs = append(tabs, "http://localhost:"+strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
+	}
+	launcher := &chromeTabsLauncher{tabs: tabs, hits: hits}
+	adapter := browser.NewChromiumAdapter("chrome", []string{chromePath}, launcher)
+	profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
+		Key: destination.Key(), Proxy: result.Session.Proxy, ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
+	}, browser.Installation{ID: "chrome", Executable: chromePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Launch(context.Background(), profile, []string{"about:blank"}); err != nil {
+		t.Fatalf("several-tabs gate: %v", err)
+	}
+}
+
+type chromeTabsLauncher struct {
+	tabs []string
+	hits <-chan string
+}
+
+func (l *chromeTabsLauncher) Launch(ctx context.Context, path string, args []string) error {
+	arguments := []string{"--headless=new", "--disable-gpu", "--disable-background-networking", "--remote-debugging-port=0"}
+	arguments = append(arguments, args...)
+	command := exec.CommandContext(ctx, path, arguments...)
+	var output strings.Builder
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		return err
+	}
+	defer func() { _ = command.Process.Kill(); _ = command.Wait() }()
+	profile := ""
+	for _, argument := range args {
+		if strings.HasPrefix(argument, "--user-data-dir=") {
+			profile = strings.TrimPrefix(argument, "--user-data-dir=")
+		}
+	}
+	if profile == "" {
+		return fmt.Errorf("Chromium launch omitted its isolated profile")
+	}
+	var debugPort string
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		contents, err := os.ReadFile(filepath.Join(profile, "DevToolsActivePort"))
+		if err == nil {
+			debugPort = strings.SplitN(string(contents), "\n", 2)[0]
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if debugPort == "" {
+		return fmt.Errorf("Chrome DevTools port did not become ready: %s", output.String())
+	}
+	for _, target := range l.tabs {
+		endpoint := "http://127.0.0.1:" + debugPort + "/json/new?" + url.QueryEscape(target)
+		request, _ := http.NewRequestWithContext(ctx, http.MethodPut, endpoint, nil)
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return fmt.Errorf("open Chrome tab: %w", err)
+		}
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			return fmt.Errorf("open Chrome tab returned %s", response.Status)
+		}
+	}
+	seen := make(map[string]bool)
+	deadlineTimer := time.NewTimer(10 * time.Second)
+	defer deadlineTimer.Stop()
+	for len(seen) < len(l.tabs) {
+		select {
+		case hit := <-l.hits:
+			seen[hit] = true
+		case <-deadlineTimer.C:
+			return fmt.Errorf("only %d of %d Chrome tabs reached remote loopback: %s", len(seen), len(l.tabs), output.String())
+		}
+	}
+	return nil
 }
 
 func restartingWebSocketServer(t *testing.T) (string, func()) {
