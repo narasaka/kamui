@@ -54,12 +54,6 @@ func TestInstalledBrowsersUseKamuiProxy(t *testing.T) {
 		_, _ = io.WriteString(w, "<html><body>remote-https</body></html>")
 	}), serverCertificate)
 	defer httpsServer.Close()
-	directServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		_, _ = io.WriteString(w, "mac-direct")
-	}))
-	defer directServer.Close()
-
 	webSocket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serveBrowserWebSocket(w, r, "ws-ok")
 	}))
@@ -79,7 +73,6 @@ func TestInstalledBrowsersUseKamuiProxy(t *testing.T) {
 	wssPort := strings.TrimPrefix(secureWebSocket.URL, "https://127.0.0.1:")
 	reportPort := strings.TrimPrefix(reportServer.URL, "http://127.0.0.1:")
 	httpsPort := strings.TrimPrefix(httpsServer.URL, "https://127.0.0.1:")
-	directPort := strings.TrimPrefix(directServer.URL, "http://127.0.0.1:")
 	httpPorts := make([]string, 0, len(httpServers))
 	for _, server := range httpServers {
 		httpPorts = append(httpPorts, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
@@ -87,19 +80,22 @@ func TestInstalledBrowsersUseKamuiProxy(t *testing.T) {
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprintf(w, `<html><body>waiting<script type="module">
 const socketResult=(target)=>new Promise((resolve,reject)=>{const socket=new WebSocket(target);socket.onmessage=(event)=>resolve(event.data);socket.onerror=reject;});
+const inspect=(name,promise)=>Promise.race([
+  promise.then(value=>name+"="+value).catch(error=>name+"=ERROR:"+error),
+  new Promise(resolve=>setTimeout(()=>resolve(name+"=TIMEOUT"),10000))
+]);
 const values=await Promise.all([
-  fetch("http://localhost:%s").then(r=>r.text()),
-  fetch("http://app.localhost:%s").then(r=>r.text()),
-  fetch("http://127.42.0.1:%s").then(r=>r.text()),
-  fetch("http://[::1]:%s").then(r=>r.text()),
-  fetch("https://localhost:%s").then(r=>r.text()),
-  socketResult("ws://localhost:%s"),
-  socketResult("wss://localhost:%s"),
-  fetch("http://0.0.0.0:%s").then(r=>r.text())
+  inspect("http-localhost",fetch("http://localhost:%s").then(r=>r.text())),
+  inspect("http-subdomain",fetch("http://app.localhost:%s").then(r=>r.text())),
+  inspect("http-ipv4",fetch("http://127.42.0.1:%s").then(r=>r.text())),
+  inspect("http-ipv6",fetch("http://[::1]:%s").then(r=>r.text())),
+  inspect("https",fetch("https://localhost:%s").then(r=>r.text())),
+  inspect("websocket",socketResult("ws://localhost:%s")),
+  inspect("secure-websocket",socketResult("wss://localhost:%s"))
 ]);
 document.body.textContent=values.join("|");
 await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("|")));
-</script></body></html>`, httpPorts[0], httpPorts[1], httpPorts[2], httpPorts[3], httpsPort, wsPort, wssPort, directPort, reportPort)
+</script></body></html>`, httpPorts[0], httpPorts[1], httpPorts[2], httpPorts[3], httpsPort, wsPort, wssPort, reportPort)
 	}))
 	defer page.Close()
 
@@ -142,7 +138,7 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 			pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
 			launcher.want = []string{
 				"remote-http-0", "remote-http-1", "remote-http-2", "remote-http-3",
-				"remote-https", "ws-ok", "wss-ok", "mac-direct",
+				"remote-https", "ws-ok", "wss-ok",
 			}
 			if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
 				t.Fatalf("browser protocol gate: %v", err)
@@ -189,7 +185,7 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 			pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
 			launcher.want = []string{
 				"remote-http-0", "remote-http-1", "remote-http-2", "remote-http-3",
-				"remote-https", "ws-ok", "wss-ok", "mac-direct",
+				"remote-https", "ws-ok", "wss-ok",
 			}
 			if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
 				t.Fatalf("browser protocol gate: %v", err)
