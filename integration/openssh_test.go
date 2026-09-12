@@ -86,7 +86,12 @@ func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(testHome) })
-	layout := state.NewLayout(filepath.Join(testHome, "Library", "Application Support", "kamui"))
+	configRoot := filepath.Join(testHome, ".config")
+	stateRoot := filepath.Join(configRoot, "kamui")
+	if runtime.GOOS == "darwin" {
+		stateRoot = filepath.Join(testHome, "Library", "Application Support", "kamui")
+	}
+	layout := state.NewLayout(stateRoot)
 	launcher := &testsupport.SSHLauncher{}
 	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
 	ctx, cancel := context.WithCancel(context.Background())
@@ -111,7 +116,7 @@ func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t
     UserKnownHostsFile %s
     StrictHostKeyChecking no
     PermitLocalCommand yes
-    LocalCommand env HOME=%q %q ssh-hook %%n
+    LocalCommand env HOME=%q XDG_CONFIG_HOME=%q %q ssh-hook %%n
     ControlMaster auto
     ControlPath %q
     ControlPersist 10
@@ -125,16 +130,13 @@ Host kamui-failed-alias
     StrictHostKeyChecking no
     ControlMaster no
 `, fixture.username, fixture.port, fixture.clientKey, filepath.Join(fixture.root, "known_hosts"),
-		testHome, kamuiBinary, controlPath, fixture.username, fixture.port,
+		testHome, configRoot, kamuiBinary, controlPath, fixture.username, fixture.port,
 		filepath.Join(fixture.root, "missing-key"), filepath.Join(fixture.root, "known_hosts"))
 	if err := os.WriteFile(clientConfig, []byte(configuration), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	wrapper := writeSSHWrapper(t, fixture.root, clientConfig)
-	if output, err := exec.Command(wrapper, "-MNf", "kamui-hook-alias").CombinedOutput(); err != nil {
-		t.Fatalf("start multiplex master: %v: %s", err, output)
-	}
-	t.Cleanup(func() { _ = exec.Command(wrapper, "-O", "exit", "kamui-hook-alias").Run() })
+	startOpenSSHMultiplexMaster(t, wrapper, "kamui-hook-alias", fixture.root)
 
 	const terminals = 4
 	started := time.Now()
@@ -182,11 +184,78 @@ Host kamui-failed-alias
 	}
 }
 
+func startOpenSSHMultiplexMaster(t *testing.T, wrapper, destination, root string) {
+	t.Helper()
+	logFile, err := os.CreateTemp(root, "multiplex-master-*.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	master := exec.Command(wrapper, "-MN", destination)
+	master.Stdout = logFile
+	master.Stderr = logFile
+	if err := master.Start(); err != nil {
+		_ = logFile.Close()
+		t.Fatalf("start multiplex master: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { done <- master.Wait() }()
+	exited := false
+	t.Cleanup(func() {
+		if !exited {
+			_ = exec.Command(wrapper, "-O", "exit", destination).Run()
+			select {
+			case <-done:
+			case <-time.After(2 * time.Second):
+				_ = master.Process.Kill()
+				<-done
+			}
+		}
+		_ = logFile.Close()
+	})
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		checkOutput, checkErr := exec.Command(wrapper, "-O", "check", destination).CombinedOutput()
+		if checkErr == nil {
+			return
+		}
+		select {
+		case waitErr := <-done:
+			exited = true
+			logOutput, _ := os.ReadFile(logFile.Name())
+			t.Fatalf("multiplex master exited before becoming ready: %v\ncheck: %s\nmaster: %s", waitErr, checkOutput, logOutput)
+		default:
+		}
+		if time.Now().After(deadline) {
+			logOutput, _ := os.ReadFile(logFile.Name())
+			t.Fatalf("multiplex master did not become ready: %v\ncheck: %s\nmaster: %s", checkErr, checkOutput, logOutput)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 type openSSHFixture struct {
 	root      string
 	username  string
 	port      int
 	clientKey string
+}
+
+type openSSHLogBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *openSSHLogBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *openSSHLogBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
 }
 
 func startDisposableOpenSSH(t *testing.T) openSSHFixture {
@@ -233,7 +302,7 @@ LogLevel ERROR
 	if err := os.WriteFile(serverConfig, []byte(serverConfiguration), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	var serverLog bytes.Buffer
+	var serverLog openSSHLogBuffer
 	server := exec.Command(sshdPath, "-D", "-e", "-f", serverConfig)
 	server.Stderr = &serverLog
 	if err := server.Start(); err != nil {
@@ -275,7 +344,7 @@ func availablePort(t *testing.T) int {
 	return port
 }
 
-func waitForListener(t *testing.T, address string, log *bytes.Buffer) {
+func waitForListener(t *testing.T, address string, log *openSSHLogBuffer) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
