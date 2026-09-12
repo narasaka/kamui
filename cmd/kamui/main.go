@@ -46,7 +46,10 @@ func runController(arguments []string) error {
 	}
 	layout := state.NewLayout(arguments[1])
 	manager := session.NewManagerWithOptions(session.ManagerOptions{
-		Transport:   ssh.Transport{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr},
+		Transport: ssh.Transport{
+			Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
+			Inspector: ssh.SystemConfigInspector{},
+		},
 		Browsers:    browser.NewCatalog(browser.DefaultAdapters(nil)),
 		ProfileRoot: layout.Profiles,
 	})

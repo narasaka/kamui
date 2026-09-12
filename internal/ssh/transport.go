@@ -84,6 +84,29 @@ type Launcher interface {
 	Start(StartRequest) (Process, error)
 }
 
+// ConfigInspector reads effective OpenSSH configuration without connecting.
+type ConfigInspector interface {
+	AgentForwarding(context.Context, string, string) (bool, error)
+}
+
+// SystemConfigInspector inspects configuration with the system OpenSSH client.
+type SystemConfigInspector struct{}
+
+func (SystemConfigInspector) AgentForwarding(ctx context.Context, path, destination string) (bool, error) {
+	command := exec.CommandContext(ctx, path, "-G", "-o", "PermitLocalCommand=no", destination)
+	output, err := command.Output()
+	if err != nil {
+		return false, err
+	}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 2 && strings.EqualFold(fields[0], "forwardagent") {
+			return strings.EqualFold(fields[1], "yes"), nil
+		}
+	}
+	return false, nil
+}
+
 // Transport configures the system OpenSSH client.
 type Transport struct {
 	SSHPath          string
@@ -92,6 +115,7 @@ type Transport struct {
 	Stdout           io.Writer
 	Stderr           io.Writer
 	ReadinessTimeout time.Duration
+	Inspector        ConfigInspector
 }
 
 // Connect starts OpenSSH and returns only after its SOCKS listener is ready.
@@ -106,6 +130,15 @@ func (t Transport) ConnectUnattended(ctx context.Context, destination string) (*
 }
 
 func (t Transport) connect(ctx context.Context, destination string, unattended bool) (*Connection, error) {
+	if !unattended && t.Inspector != nil {
+		path := t.SSHPath
+		if path == "" {
+			path = "/usr/bin/ssh"
+		}
+		if enabled, err := t.Inspector.AgentForwarding(ctx, path, destination); err == nil && enabled {
+			fmt.Fprintf(defaultWriter(t.Stderr), "WARNING: SSH agent forwarding is enabled for %s; the remote host can access the forwarded agent.\n", destination)
+		}
+	}
 	var lastErr error
 	for range 3 {
 		connection, stderr, err := t.connectAttempt(ctx, destination, unattended)

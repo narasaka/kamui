@@ -1,6 +1,7 @@
 package ssh_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net"
 	"os"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -88,6 +90,31 @@ func TestUnattendedReconnectDisablesAuthenticationPrompts(t *testing.T) {
 	if !wantPair {
 		t.Fatalf("unattended OpenSSH args = %v, want BatchMode=yes", launcher.request.Args)
 	}
+}
+
+func TestInteractiveConnectWarnsWhenAgentForwardingIsEnabled(t *testing.T) {
+	t.Parallel()
+
+	launcher := &readyLauncher{}
+	var stderr bytes.Buffer
+	transport := ssh.Transport{
+		Launcher: launcher, Inspector: enabledAgentInspector{}, Stderr: &stderr,
+		ReadinessTimeout: time.Second,
+	}
+	connection, err := transport.Connect(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	if got := stderr.String(); !strings.Contains(got, "agent forwarding") || !strings.Contains(got, "reyna") {
+		t.Fatalf("warning = %q, want destination-specific agent-forwarding warning", got)
+	}
+}
+
+type enabledAgentInspector struct{}
+
+func (enabledAgentInspector) AgentForwarding(context.Context, string, string) (bool, error) {
+	return true, nil
 }
 
 func TestConnectionDialsTargetsThroughSOCKS5(t *testing.T) {
