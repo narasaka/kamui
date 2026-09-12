@@ -20,13 +20,18 @@ type Streams struct {
 	ErrOut io.Writer
 }
 
+// Executor is the application command seam consumed by the CLI presentation.
+type Executor interface {
+	Execute(context.Context, kamuiapp.Request) (kamuiapp.Result, error)
+}
+
 // NewCommand returns Kamui's complete command grammar.
 func NewCommand(streams Streams) *cli.Command {
 	return NewCommandWithApplication(nil, streams)
 }
 
 // NewCommandWithApplication returns the command grammar wired to Kamui.
-func NewCommandWithApplication(application *kamuiapp.Application, streams Streams) *cli.Command {
+func NewCommandWithApplication(application Executor, streams Streams) *cli.Command {
 	command := &cli.Command{
 		Name:      "kamui",
 		Version:   version.Version,
