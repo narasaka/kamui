@@ -10,10 +10,31 @@ host.
 > security treatment associated with `localhost`. Use only hosts you trust and
 > keep the Kamui browser profile separate from ordinary browsing.
 
-Kamui is under development and is not yet ready for general installation.
-
 Installation, upgrade, uninstall, and release-build instructions are in
 [the installation guide](docs/install.md).
+
+## Basic use
+
+Install Kamui, make sure the destination works with the system SSH client, then
+run:
+
+```sh
+kamui reyna
+# or
+kamui narasaka@dev.example.com
+```
+
+Kamui starts its own non-interactive OpenSSH transport, an ephemeral local
+proxy, and an isolated development-browser profile. It does not need an
+existing terminal session, Tailscale, declared application ports, or software
+on the remote host. Start remote services however you normally do, then enter
+their unchanged URLs (for example, `http://localhost:3003`) in the dedicated
+browser.
+
+Use `kamui status`, `kamui open reyna URL...`, and `kamui stop reyna` to manage
+the session. `kamui doctor reyna` checks the local installation and SSH path.
+If the remote service is absent, the proxy reports a remote connection refusal;
+Kamui never starts project services itself.
 
 ## Command contract
 
@@ -57,6 +78,36 @@ Only browser TCP traffic is covered. UDP and HTTP/3 are not transported, and
 Safari is not supported. Ordinary non-loopback browser destinations connect
 directly from the Mac. Kamui does not launch, install, or configure remote
 application services and does not require Tailscale.
+
+A dropped SSH tunnel breaks existing streams and WebSockets; new connections
+resume after a successful bounded reconnect. Browser-native UDP and HTTP/3 do
+not cross the proxy. Native applications and terminal commands are unaffected.
+Browser compatibility can change between releases. Safari and system-wide
+loopback interception are intentionally out of scope.
+
+## Optional SSH login hook
+
+`kamui SSH_DESTINATION` is the normal workflow. To request Kamui activation when
+an interactive SSH login succeeds, print (but do not install) a snippet:
+
+```sh
+kamui print-ssh-config reyna
+```
+
+The snippet uses `%n` to preserve the original alias. The fast, silent hook is
+independent of the interactive shell and the Kamui-owned child forces
+`PermitLocalCommand=no`, preventing recursion. Review and add the snippet to
+your SSH configuration yourself.
+
+## Troubleshooting
+
+- Run `kamui doctor DESTINATION`; it checks `ssh`, connectivity, browser
+  discovery, state permissions, port allocation, and the loopback proxy. It
+  also warns if effective SSH configuration enables agent forwarding.
+- Rerun `kamui DESTINATION` in a terminal if status says authentication is
+  required after a network change. Background retries never hide prompts.
+- Use `kamui browsers` to see stable browser identifiers and executable paths.
+- Use `kamui stop --all` before removing runtime state.
 
 ## Development
 

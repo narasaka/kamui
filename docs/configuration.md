@@ -19,11 +19,15 @@ Example:
 ```json
 {
   "defaultBrowser": "arc",
+  "openBrowserOnSSH": false,
+  "idleTimeout": "0s",
+  "stopBrowserOnStop": false,
   "hosts": {
     "reyna": {
       "browser": "firefox",
       "openBrowserOnSSH": true,
-      "idleTimeout": "30m"
+      "idleTimeout": "30m",
+      "stopBrowserOnStop": true
     }
   }
 }
@@ -32,3 +36,10 @@ Example:
 Unknown fields are rejected so misspelled security or lifecycle settings do not
 silently fall back to defaults. Generated state and browser profiles are stored
 under the same application-support directory with user-only permissions.
+
+`openBrowserOnSSH` applies only to the optional SSH hook. `idleTimeout` stops a
+session after the proxy has no open connections and no recent traffic; zero
+disables idle expiry. `stopBrowserOnStop` defaults to false, leaving the
+dedicated browser open with an offline proxy. When true, Kamui also terminates
+the browser process it launched for that dedicated profile when the session is
+stopped or expires. Existing profile files are preserved in either case.
