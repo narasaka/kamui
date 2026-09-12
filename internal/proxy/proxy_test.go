@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/narasaka/kamui/internal/proxy"
@@ -83,6 +84,179 @@ func TestHTTPProxyRoutesLoopbackRemotelyAndOtherHostsDirectly(t *testing.T) {
 	}
 	if fmt.Sprint(directTargets) != "[direct.test:8080]" {
 		t.Errorf("direct dial targets = %v, want [direct.test:8080]", directTargets)
+	}
+}
+
+func TestHTTPProxyLocalFirstUsesAvailableMacLoopback(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "local response")
+	}))
+	t.Cleanup(backend.Close)
+	backendAddress := strings.TrimPrefix(backend.URL, "http://")
+
+	var remoteCalled bool
+	running, err := proxy.Start(context.Background(), proxy.Dialers{
+		Direct: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if address != "127.0.0.1:3003" {
+				t.Fatalf("direct dial address = %q, want 127.0.0.1:3003", address)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, backendAddress)
+		},
+		Remote: func(context.Context, string, string) (net.Conn, error) {
+			remoteCalled = true
+			return nil, fmt.Errorf("remote dial must not be used")
+		},
+	}, proxy.Options{LoopbackMode: proxy.LocalFirst})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	proxyURL, _ := url.Parse("http://" + running.Addr().String())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	response, err := client.Get("http://localhost:3003")
+	if err != nil {
+		t.Fatalf("GET local loopback through proxy: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "local response" {
+		t.Fatalf("body = %q, want local response", body)
+	}
+	if remoteCalled {
+		t.Fatal("remote dialer was called while Mac loopback was available")
+	}
+}
+
+func TestHTTPProxyLocalFirstFallsBackWhenMacLoopbackRefusesConnection(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "remote response")
+	}))
+	t.Cleanup(backend.Close)
+	backendAddress := strings.TrimPrefix(backend.URL, "http://")
+
+	var remoteAddress string
+	running, err := proxy.Start(context.Background(), proxy.Dialers{
+		Direct: func(context.Context, string, string) (net.Conn, error) {
+			return nil, fmt.Errorf("connect locally: %w", syscall.ECONNREFUSED)
+		},
+		Remote: func(ctx context.Context, network, address string) (net.Conn, error) {
+			remoteAddress = address
+			return (&net.Dialer{}).DialContext(ctx, network, backendAddress)
+		},
+	}, proxy.Options{LoopbackMode: proxy.LocalFirst})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	proxyURL, _ := url.Parse("http://" + running.Addr().String())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	response, err := client.Get("http://localhost:3003")
+	if err != nil {
+		t.Fatalf("GET remote fallback through proxy: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "remote response" {
+		t.Fatalf("body = %q, want remote response", body)
+	}
+	if remoteAddress != "127.0.0.1:3003" {
+		t.Fatalf("remote dial address = %q, want 127.0.0.1:3003", remoteAddress)
+	}
+}
+
+func TestHTTPProxyLocalFirstReachesIPv6OnlyMacLoopback(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback is unavailable: %v", err)
+	}
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "local IPv6 response")
+	}))
+	backend.Listener = listener
+	backend.Start()
+	t.Cleanup(backend.Close)
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	var remoteCalled bool
+	running, err := proxy.Start(context.Background(), proxy.Dialers{
+		Direct: (&net.Dialer{}).DialContext,
+		Remote: func(context.Context, string, string) (net.Conn, error) {
+			remoteCalled = true
+			return nil, fmt.Errorf("remote dial must not be used")
+		},
+	}, proxy.Options{LoopbackMode: proxy.LocalFirst})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	proxyURL, _ := url.Parse("http://" + running.Addr().String())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	response, err := client.Get(fmt.Sprintf("http://localhost:%d", port))
+	if err != nil {
+		t.Fatalf("GET IPv6-only Mac loopback: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "local IPv6 response" {
+		t.Fatalf("body = %q, want local IPv6 response", body)
+	}
+	if remoteCalled {
+		t.Fatal("remote dialer was called while Mac IPv6 loopback was available")
+	}
+}
+
+func TestHTTPProxyLocalFirstDoesNotFallBackAfterOtherLocalErrors(t *testing.T) {
+	t.Parallel()
+
+	var remoteCalled bool
+	running, err := proxy.Start(context.Background(), proxy.Dialers{
+		Direct: func(context.Context, string, string) (net.Conn, error) {
+			return nil, fmt.Errorf("connect locally: %w", syscall.EACCES)
+		},
+		Remote: func(context.Context, string, string) (net.Conn, error) {
+			remoteCalled = true
+			return nil, fmt.Errorf("remote dial must not be used")
+		},
+	}, proxy.Options{LoopbackMode: proxy.LocalFirst})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	proxyURL, _ := url.Parse("http://" + running.Addr().String())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	response, err := client.Get("http://localhost:3003")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusBadGateway || !strings.Contains(string(body), "permission denied") {
+		t.Fatalf("status=%d body=%q, want local permission error", response.StatusCode, body)
+	}
+	if remoteCalled {
+		t.Fatal("remote dialer was called after a non-refusal local error")
 	}
 }
 
@@ -255,6 +429,52 @@ func TestProxyTunnelsHTTPSWithoutTerminatingTLS(t *testing.T) {
 	}
 	if dialed != "127.0.0.1:3443" {
 		t.Fatalf("remote dial target = %q, want 127.0.0.1:3443", dialed)
+	}
+}
+
+func TestProxyLocalFirstTunnelsHTTPSToAvailableMacLoopback(t *testing.T) {
+	t.Parallel()
+
+	backend := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "secure local response")
+	}))
+	t.Cleanup(backend.Close)
+	backendAddress := strings.TrimPrefix(backend.URL, "https://")
+
+	var remoteCalled bool
+	running, err := proxy.Start(context.Background(), proxy.Dialers{
+		Direct: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, network, backendAddress)
+		},
+		Remote: func(context.Context, string, string) (net.Conn, error) {
+			remoteCalled = true
+			return nil, fmt.Errorf("remote dial must not be used")
+		},
+	}, proxy.Options{LoopbackMode: proxy.LocalFirst})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	proxyURL, _ := url.Parse("http://" + running.Addr().String())
+	client := &http.Client{Transport: &http.Transport{
+		Proxy:           http.ProxyURL(proxyURL),
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}}
+
+	response, err := client.Get("https://localhost:3443")
+	if err != nil {
+		t.Fatalf("HTTPS to Mac loopback through proxy: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "secure local response" {
+		t.Fatalf("body = %q, want secure local response", body)
+	}
+	if remoteCalled {
+		t.Fatal("remote dialer was called while Mac loopback was available")
 	}
 }
 

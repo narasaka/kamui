@@ -19,12 +19,14 @@ Example:
 ```json
 {
   "defaultBrowser": "arc",
+  "loopback": "remote-only",
   "openBrowserOnSSH": false,
   "idleTimeout": "0s",
   "stopBrowserOnStop": false,
   "hosts": {
     "my-dev-server": {
       "browser": "firefox",
+      "loopback": "local-first",
       "openBrowserOnSSH": true,
       "idleTimeout": "30m",
       "stopBrowserOnStop": true
@@ -43,3 +45,9 @@ disables idle expiry. `stopBrowserOnStop` defaults to false, leaving the
 dedicated browser open with an offline proxy. When true, Kamui also terminates
 the browser process it launched for that dedicated profile when the session is
 stopped or expires. Existing profile files are preserved in either case.
+
+`loopback` accepts `remote-only` or `local-first` and defaults to
+`remote-only`. In local-first mode, an available Mac loopback listener wins;
+Kamui uses remote loopback only when both Mac IPv4 and IPv6 connections are
+refused. This permits remote browser content to reach genuine Mac loopback
+services, so use it only with trusted hosts.

@@ -5,9 +5,10 @@ errors and do not reinterpret an SSH destination as OpenSSH options.
 
 ## Primary command
 
-`kamui SSH_DESTINATION [--browser BROWSER]` ensures a session exists. It does
-not accept application ports or a `-url` flag. Repeating the command reuses the
-same exact-destination session.
+`kamui SSH_DESTINATION [--browser BROWSER] [--loopback MODE]` ensures a session
+exists. It does not accept application ports or a `-url` flag. Repeating the
+command reuses the same exact-destination session, including its initially
+selected loopback mode.
 
 Running `kamui` without arguments prints command help and exits successfully.
 `kamui -v` and `kamui --version` print only the build version, such as
@@ -15,6 +16,10 @@ Running `kamui` without arguments prints command help and exits successfully.
 
 `BROWSER` may be a stable supported browser identifier or an absolute browser
 executable path. An ambiguous path requires an explicit browser family.
+
+`MODE` is `remote-only` (the default) or `local-first`. Local-first tries Mac
+IPv4 and IPv6 loopback before the remote host and falls back only after both
+local connection attempts are refused.
 
 ## Supporting commands
 

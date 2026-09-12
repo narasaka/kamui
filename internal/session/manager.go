@@ -37,6 +37,7 @@ type Command struct {
 	SkipBrowser       bool
 	IdleTimeout       time.Duration
 	StopBrowserOnStop bool
+	LoopbackMode      proxy.LoopbackMode
 	Unattended        bool
 }
 
@@ -52,11 +53,12 @@ const (
 
 // SessionStatus is the observable state for one exact destination.
 type SessionStatus struct {
-	Destination Destination
-	State       SessionState
-	Proxy       netip.AddrPort
-	LastError   error
-	Browser     string
+	Destination  Destination
+	State        SessionState
+	Proxy        netip.AddrPort
+	LoopbackMode proxy.LoopbackMode
+	LastError    error
+	Browser      string
 }
 
 // ManagerOptions supplies session implementations and profile storage.
@@ -101,6 +103,7 @@ type managedSession struct {
 	destination     Destination
 	connection      *ssh.Connection
 	proxy           *proxy.RunningProxy
+	loopbackMode    proxy.LoopbackMode
 	lastError       error
 	requiresAuth    bool
 	browserAdapter  browser.Adapter
@@ -197,14 +200,15 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 	sessionContext, cancel := context.WithCancel(m.ctx)
 	managed := &managedSession{
 		ctx: sessionContext, cancel: cancel, destination: destination,
-		connection: connection, idleTimeout: command.IdleTimeout, stopBrowser: command.StopBrowserOnStop,
+		connection: connection, loopbackMode: command.LoopbackMode,
+		idleTimeout: command.IdleTimeout, stopBrowser: command.StopBrowserOnStop,
 	}
 	runningProxy, err := proxy.Start(m.ctx, proxy.Dialers{
 		Direct: (&net.Dialer{}).DialContext,
 		Remote: func(ctx context.Context, network, address string) (net.Conn, error) {
 			return managed.dial(ctx, network, address)
 		},
-	}, proxy.Options{ListenAddress: listenAddress})
+	}, proxy.Options{ListenAddress: listenAddress, LoopbackMode: command.LoopbackMode})
 	if err != nil {
 		_ = connection.Close()
 		return Result{}, err
@@ -328,10 +332,11 @@ func (s *managedSession) snapshot() SessionStatus {
 		state = SessionConnecting
 	}
 	status := SessionStatus{
-		Destination: s.destination,
-		State:       state,
-		Proxy:       s.proxy.Addr(),
-		LastError:   errors.Join(transport.Error, s.lastError),
+		Destination:  s.destination,
+		State:        state,
+		Proxy:        s.proxy.Addr(),
+		LoopbackMode: s.loopbackMode,
+		LastError:    errors.Join(transport.Error, s.lastError),
 	}
 	if s.browserAdapter != nil {
 		status.Browser = s.browserAdapter.ID()

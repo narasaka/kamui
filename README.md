@@ -62,6 +62,10 @@ The primary command accepts exactly one OpenSSH destination:
 kamui my-dev-server
 kamui narasaka@dev.example.com
 kamui my-dev-server --browser firefox
+
+# Prefer genuine Mac loopback services, falling back to the remote host only
+# when neither Mac loopback address accepts the connection.
+kamui my-dev-server --loopback local-first
 ```
 
 The destination is passed to OpenSSH as one positional argument. SSH aliases,
@@ -96,8 +100,21 @@ See [the CLI contract](docs/cli.md) and
 Inside a Kamui development profile, `localhost`, names ending in `.localhost`,
 IPv4 `127.0.0.0/8`, and IPv6 `::1` refer to the remote loopback interface. The
 original port is preserved. Kamui tries remote `127.0.0.1` first and falls back
-to remote `::1`, allowing services bound to either address family. Those names
-cannot simultaneously reach genuine Mac loopback services from that profile.
+to remote `::1`, allowing services bound to either address family. In this
+default mode, those names cannot simultaneously reach genuine Mac loopback
+services from that profile.
+
+This remote-only behavior is the default. With `--loopback local-first`, Kamui
+first tries the requested port on Mac `127.0.0.1` and `::1`. It falls back to
+the remote host only when both connections are refused. Other local failures,
+HTTP error responses, and TLS errors do not trigger fallback. Existing HTTP
+connections and WebSockets remain on the side they originally reached until
+they reconnect.
+
+Local-first mode weakens the dedicated profile's isolation: content served by
+the remote host may access genuine Mac loopback services and the same browser
+origin may be served by different machines as listeners start or stop. Enable
+it only for trusted remote hosts and trusted local services.
 
 Only browser TCP traffic is covered. UDP and HTTP/3 are not transported, and
 Safari is not supported. Ordinary non-loopback browser destinations connect

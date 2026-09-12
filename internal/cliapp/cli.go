@@ -9,6 +9,7 @@ import (
 
 	kamuiapp "github.com/narasaka/kamui/internal/app"
 	"github.com/narasaka/kamui/internal/browser"
+	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/version"
 	cli "github.com/urfave/cli/v3"
@@ -49,6 +50,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "browser"},
 			&cli.StringFlag{Name: "browser-family"},
+			&cli.StringFlag{Name: "loopback", Usage: "route loopback using remote-only or local-first"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.NArg() == 0 {
@@ -68,13 +70,18 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				Operation:   kamuiapp.Ensure,
 				Destination: destination.String(),
 				Browser:     browser.Selection{Explicit: cmd.String("browser"), Family: cmd.String("browser-family")},
+				Loopback:    cmd.String("loopback"),
 			})
 			if err != nil {
 				return err
 			}
 			_, err = fmt.Fprintf(streams.Out, "%s connected; proxy %s; browser %s\n", destination, result.Session.Proxy, result.Session.Browser)
-			if err == nil && result.ShowSecurityWarning && streams.ErrOut != nil {
-				_, err = fmt.Fprintln(streams.ErrOut, "WARNING: Remote content receives localhost origin trust in this dedicated profile; genuine Mac localhost is unavailable there.")
+			if err == nil && streams.ErrOut != nil && (result.ShowSecurityWarning || result.Session.LoopbackMode == proxy.LocalFirst) {
+				warning := "WARNING: Remote content receives localhost origin trust in this dedicated profile; genuine Mac localhost is unavailable there."
+				if result.Session.LoopbackMode == proxy.LocalFirst {
+					warning = "WARNING: Remote content receives localhost origin trust and may access genuine Mac localhost services in local-first mode."
+				}
+				_, err = fmt.Fprintln(streams.ErrOut, warning)
 			}
 			return err
 		},

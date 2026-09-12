@@ -13,6 +13,7 @@ import (
 	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/config"
 	"github.com/narasaka/kamui/internal/controller"
+	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/state"
 )
@@ -36,6 +37,7 @@ type Request struct {
 	Operation   Operation
 	Destination string
 	Browser     browser.Selection
+	Loopback    string
 	URLs        []string
 	All         bool
 	JSON        bool
@@ -110,10 +112,14 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	skipBrowser := false
 	idleTimeout := time.Duration(0)
 	stopBrowserOnStop := false
+	loopbackMode := proxy.RemoteOnly
 	if request.Operation == Ensure || request.Operation == SSHHook {
 		var overrides config.Overrides
 		if selection.Explicit != "" {
 			overrides.Browser = &selection.Explicit
+		}
+		if request.Loopback != "" {
+			overrides.Loopback = &request.Loopback
 		}
 		effective, err := a.config.Resolve(ctx, destination, overrides)
 		if err != nil {
@@ -132,12 +138,14 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		}
 		idleTimeout = effective.IdleTimeout
 		stopBrowserOnStop = effective.StopBrowserOnStop
+		loopbackMode = effective.LoopbackMode
 	}
 	command := session.Command{
 		Operation: operation, Destination: destination, Browser: selection, URLs: request.URLs,
 		SkipBrowser:       skipBrowser,
 		IdleTimeout:       idleTimeout,
 		StopBrowserOnStop: stopBrowserOnStop,
+		LoopbackMode:      loopbackMode,
 		Unattended:        request.Operation == SSHHook,
 	}
 	call := func() (session.Result, error) {

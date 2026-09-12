@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/narasaka/kamui/internal/config"
+	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 )
 
@@ -72,6 +73,63 @@ func TestLoaderRejectsUnknownConfigurationFields(t *testing.T) {
 	}
 }
 
+func TestLoaderResolvesGlobalLoopbackMode(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"loopback":"local-first"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination, _ := session.ParseDestination("reyna")
+
+	effective, err := (config.Loader{Path: path}).Resolve(context.Background(), destination, config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.LoopbackMode != proxy.LocalFirst {
+		t.Fatalf("LoopbackMode = %v, want local-first", effective.LoopbackMode)
+	}
+}
+
+func TestLoaderResolvesHostLoopbackModeOverGlobal(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	contents := `{"loopback":"local-first","hosts":{"reyna":{"loopback":"remote-only"}}}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination, _ := session.ParseDestination("reyna")
+
+	effective, err := (config.Loader{Path: path}).Resolve(context.Background(), destination, config.Overrides{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.LoopbackMode != proxy.RemoteOnly {
+		t.Fatalf("LoopbackMode = %v, want host remote-only", effective.LoopbackMode)
+	}
+}
+
+func TestLoaderResolvesLoopbackOverrideOverHost(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	contents := `{"hosts":{"reyna":{"loopback":"remote-only"}}}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination, _ := session.ParseDestination("reyna")
+	override := "local-first"
+
+	effective, err := (config.Loader{Path: path}).Resolve(context.Background(), destination, config.Overrides{Loopback: &override})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if effective.LoopbackMode != proxy.LocalFirst {
+		t.Fatalf("LoopbackMode = %v, want CLI local-first", effective.LoopbackMode)
+	}
+}
+
 func TestLoaderRejectsTrailingJSONAndNegativeIdleTimeouts(t *testing.T) {
 	t.Parallel()
 
@@ -80,6 +138,8 @@ func TestLoaderRejectsTrailingJSONAndNegativeIdleTimeouts(t *testing.T) {
 		"trailing document":       `{} {}`,
 		"negative global timeout": `{"idleTimeout":"-1s"}`,
 		"negative host timeout":   `{"hosts":{"reyna":{"idleTimeout":"-1s"}}}`,
+		"invalid global loopback": `{"loopback":"sometimes-local"}`,
+		"invalid host loopback":   `{"hosts":{"reyna":{"loopback":"sometimes-local"}}}`,
 	} {
 		name, contents := name, contents
 		t.Run(name, func(t *testing.T) {

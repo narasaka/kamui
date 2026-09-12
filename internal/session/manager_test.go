@@ -7,7 +7,10 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +19,7 @@ import (
 	"time"
 
 	"github.com/narasaka/kamui/internal/browser"
+	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/ssh"
 	"github.com/narasaka/kamui/internal/state"
@@ -53,6 +57,45 @@ func TestManagerEnsuresAndReusesOneNetworkingSession(t *testing.T) {
 	}
 	if status.Session.State != session.SessionConnected {
 		t.Fatalf("session state = %v, want connected", status.Session.State)
+	}
+}
+
+func TestManagerKeepsInitialLoopbackModeWhenReusingSession(t *testing.T) {
+	t.Parallel()
+
+	manager := session.NewManager(ssh.Transport{Launcher: &managerLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	first, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true, LoopbackMode: proxy.LocalFirst,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true, LoopbackMode: proxy.RemoteOnly,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "local response")
+	}))
+	t.Cleanup(backend.Close)
+	backendURL, _ := url.Parse(backend.URL)
+	proxyURL, _ := url.Parse("http://" + first.Session.Proxy.String())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	response, err := client.Get("http://localhost:" + backendURL.Port())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "local response" {
+		t.Fatalf("body = %q, want reused local-first session", body)
 	}
 }
 

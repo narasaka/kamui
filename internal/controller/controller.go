@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/narasaka/kamui/internal/browser"
+	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/state"
 )
@@ -62,6 +63,7 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 		SkipBrowser:       command.SkipBrowser,
 		IdleTimeout:       command.IdleTimeout,
 		StopBrowserOnStop: command.StopBrowserOnStop,
+		LoopbackMode:      command.LoopbackMode,
 		Unattended:        command.Unattended,
 	}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
@@ -185,6 +187,7 @@ func (s *Server) handle(connection net.Conn) {
 		SkipBrowser:       request.SkipBrowser,
 		IdleTimeout:       request.IdleTimeout,
 		StopBrowserOnStop: request.StopBrowserOnStop,
+		LoopbackMode:      request.LoopbackMode,
 		Unattended:        request.Unattended,
 	}
 	if request.Async {
@@ -251,24 +254,26 @@ func writeToken(path string) (string, error) {
 }
 
 type wireRequest struct {
-	Token             string            `json:"token"`
-	Operation         session.Operation `json:"operation"`
-	Destination       string            `json:"destination"`
-	Browser           browser.Selection `json:"browser"`
-	URLs              []string          `json:"urls,omitempty"`
-	Async             bool              `json:"async,omitempty"`
-	SkipBrowser       bool              `json:"skipBrowser,omitempty"`
-	IdleTimeout       time.Duration     `json:"idleTimeout,omitempty"`
-	StopBrowserOnStop bool              `json:"stopBrowserOnStop,omitempty"`
-	Unattended        bool              `json:"unattended,omitempty"`
+	Token             string             `json:"token"`
+	Operation         session.Operation  `json:"operation"`
+	Destination       string             `json:"destination"`
+	Browser           browser.Selection  `json:"browser"`
+	URLs              []string           `json:"urls,omitempty"`
+	Async             bool               `json:"async,omitempty"`
+	SkipBrowser       bool               `json:"skipBrowser,omitempty"`
+	IdleTimeout       time.Duration      `json:"idleTimeout,omitempty"`
+	StopBrowserOnStop bool               `json:"stopBrowserOnStop,omitempty"`
+	LoopbackMode      proxy.LoopbackMode `json:"loopbackMode,omitempty"`
+	Unattended        bool               `json:"unattended,omitempty"`
 }
 
 type wireStatus struct {
-	Destination string               `json:"destination"`
-	State       session.SessionState `json:"state"`
-	Proxy       string               `json:"proxy"`
-	Browser     string               `json:"browser,omitempty"`
-	LastError   string               `json:"lastError,omitempty"`
+	Destination  string               `json:"destination"`
+	State        session.SessionState `json:"state"`
+	Proxy        string               `json:"proxy"`
+	LoopbackMode proxy.LoopbackMode   `json:"loopbackMode,omitempty"`
+	Browser      string               `json:"browser,omitempty"`
+	LastError    string               `json:"lastError,omitempty"`
 }
 
 type wireResult struct {
@@ -296,7 +301,7 @@ func makeWireResult(result session.Result) wireResult {
 func makeWireStatus(status session.SessionStatus) wireStatus {
 	wire := wireStatus{
 		Destination: status.Destination.String(), State: status.State,
-		Proxy: status.Proxy.String(), Browser: status.Browser,
+		Proxy: status.Proxy.String(), LoopbackMode: status.LoopbackMode, Browser: status.Browser,
 	}
 	if status.LastError != nil {
 		wire.LastError = status.LastError.Error()
@@ -332,7 +337,10 @@ func (s wireStatus) sessionStatus() (session.SessionStatus, error) {
 	if err != nil {
 		return session.SessionStatus{}, fmt.Errorf("invalid proxy address from controller: %w", err)
 	}
-	status := session.SessionStatus{Destination: destination, State: s.State, Proxy: proxyAddress, Browser: s.Browser}
+	status := session.SessionStatus{
+		Destination: destination, State: s.State, Proxy: proxyAddress,
+		LoopbackMode: s.LoopbackMode, Browser: s.Browser,
+	}
 	if s.LastError != "" {
 		status.LastError = errors.New(s.LastError)
 	}
