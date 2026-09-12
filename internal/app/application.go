@@ -24,6 +24,7 @@ type Operation uint8
 
 const (
 	Ensure Operation = iota
+	Mirror
 	Status
 	Stop
 	Open
@@ -116,7 +117,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	idleTimeout := time.Duration(0)
 	stopBrowserOnStop := false
 	loopbackMode := proxy.RemoteOnly
-	if request.Operation == Ensure || request.Operation == SSHHook {
+	if request.Operation == Ensure || request.Operation == SSHHook || request.Operation == Mirror {
 		var overrides config.Overrides
 		if selection.Explicit != "" {
 			overrides.Browser = &selection.Explicit
@@ -139,6 +140,9 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		if request.Operation == SSHHook && !effective.OpenBrowserOnSSH {
 			skipBrowser = true
 		}
+		if request.Operation == Mirror {
+			skipBrowser = true
+		}
 		idleTimeout = effective.IdleTimeout
 		stopBrowserOnStop = effective.StopBrowserOnStop
 		loopbackMode = effective.LoopbackMode
@@ -150,6 +154,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		StopBrowserOnStop: stopBrowserOnStop,
 		LoopbackMode:      loopbackMode,
 		Unattended:        request.Operation == SSHHook,
+		EnableMirror:      request.Operation == Mirror,
 	}
 	call := func() (session.Result, error) {
 		if request.Operation == SSHHook {
@@ -289,7 +294,7 @@ func (a *Application) completeResult(destination session.Destination, operation 
 
 func sessionOperation(operation Operation, all bool) (session.Operation, error) {
 	switch operation {
-	case Ensure, SSHHook:
+	case Ensure, Mirror, SSHHook:
 		return session.Ensure, nil
 	case Status:
 		return session.Status, nil

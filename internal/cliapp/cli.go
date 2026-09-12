@@ -9,6 +9,7 @@ import (
 
 	kamuiapp "github.com/narasaka/kamui/internal/app"
 	"github.com/narasaka/kamui/internal/browser"
+	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/version"
@@ -50,7 +51,8 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "browser"},
 			&cli.StringFlag{Name: "browser-family"},
-			&cli.StringFlag{Name: "loopback", Usage: "route loopback using remote-only or local-first"},
+			&cli.StringFlag{Name: "browser-loopback", Usage: "route dedicated-browser loopback using remote-only or local-first"},
+			&cli.StringFlag{Name: "loopback", Usage: "deprecated alias for --browser-loopback"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.NArg() == 0 {
@@ -64,13 +66,20 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				return err
 			}
 			if application == nil {
+				if _, err := browserLoopbackValue(cmd, streams.ErrOut); err != nil {
+					return err
+				}
 				return notImplemented("ensure")
+			}
+			loopback, err := browserLoopbackValue(cmd, streams.ErrOut)
+			if err != nil {
+				return err
 			}
 			result, err := application.Execute(ctx, kamuiapp.Request{
 				Operation:   kamuiapp.Ensure,
 				Destination: destination.String(),
 				Browser:     browser.Selection{Explicit: cmd.String("browser"), Family: cmd.String("browser-family")},
-				Loopback:    cmd.String("loopback"),
+				Loopback:    loopback,
 			})
 			if err != nil {
 				return err
@@ -88,6 +97,28 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	}
 
 	command.Commands = []*cli.Command{
+		{
+			Name:      "mirror",
+			Usage:     "mirror remote TCP listeners on Mac loopback",
+			ArgsUsage: "SSH_DESTINATION",
+			Action: func(ctx context.Context, cmd *cli.Command) error {
+				if err := exactlyOneDestination(cmd); err != nil {
+					return err
+				}
+				if application == nil {
+					return notImplemented("mirror")
+				}
+				result, err := application.Execute(ctx, kamuiapp.Request{
+					Operation: kamuiapp.Mirror, Destination: cmd.Args().First(),
+				})
+				if err != nil {
+					return err
+				}
+				_, err = fmt.Fprintf(streams.Out, "%s mirroring enabled; mirrored %s; conflicts %s\n",
+					cmd.Args().First(), formatPorts(result.Session.Mirror.MirroredPorts), formatConflicts(result.Session.Mirror.ConflictedPorts))
+				return err
+			},
+		},
 		{
 			Name:  "logs",
 			Usage: "show OpenSSH background diagnostics",
@@ -283,7 +314,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 }
 
 func printStatuses(writer io.Writer, statuses []session.SessionStatus, verbose bool) error {
-	header := "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH"
+	header := "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tMIRROR\tMIRRORED\tCONFLICTS\tMIRROR ERROR"
 	if verbose {
 		header += "\tLAST ERROR"
 	}
@@ -291,8 +322,17 @@ func printStatuses(writer io.Writer, statuses []session.SessionStatus, verbose b
 		return err
 	}
 	for _, status := range statuses {
-		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s",
-			status.Destination, sessionState(status.State), status.Browser, status.Proxy, sshState(status.State))
+		mirrorState := "disabled"
+		if status.Mirror.Enabled {
+			mirrorState = "enabled"
+		}
+		mirrorError := ""
+		if status.Mirror.LastError != nil {
+			mirrorError = status.Mirror.LastError.Error()
+		}
+		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
+			status.Destination, sessionState(status.State), status.Browser, status.Proxy, sshState(status.State),
+			mirrorState, formatPorts(status.Mirror.MirroredPorts), formatConflicts(status.Mirror.ConflictedPorts), mirrorError)
 		if verbose {
 			lastError := ""
 			if status.LastError != nil {
@@ -305,6 +345,41 @@ func printStatuses(writer io.Writer, statuses []session.SessionStatus, verbose b
 		}
 	}
 	return nil
+}
+
+func browserLoopbackValue(cmd *cli.Command, notices io.Writer) (string, error) {
+	if cmd.IsSet("browser-loopback") && cmd.IsSet("loopback") {
+		return "", fmt.Errorf("use either --browser-loopback or deprecated --loopback, not both")
+	}
+	if cmd.IsSet("loopback") {
+		if notices != nil {
+			_, _ = fmt.Fprintln(notices, "NOTICE: --loopback is deprecated; use --browser-loopback (dedicated browser only).")
+		}
+		return cmd.String("loopback"), nil
+	}
+	return cmd.String("browser-loopback"), nil
+}
+
+func formatPorts(ports []uint16) string {
+	if len(ports) == 0 {
+		return "-"
+	}
+	values := make([]string, 0, len(ports))
+	for _, port := range ports {
+		values = append(values, fmt.Sprint(port))
+	}
+	return strings.Join(values, ",")
+}
+
+func formatConflicts(conflicts []mirror.Conflict) string {
+	if len(conflicts) == 0 {
+		return "-"
+	}
+	values := make([]string, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		values = append(values, fmt.Sprint(conflict.Port))
+	}
+	return strings.Join(values, ",")
 }
 
 func sshState(state session.SessionState) string {

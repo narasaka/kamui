@@ -40,6 +40,7 @@ type Effective struct {
 
 type fileConfig struct {
 	DefaultBrowser    string                `json:"defaultBrowser"`
+	BrowserLoopback   string                `json:"browserLoopback"`
 	Loopback          string                `json:"loopback"`
 	OpenBrowserOnSSH  *bool                 `json:"openBrowserOnSSH"`
 	IdleTimeout       string                `json:"idleTimeout"`
@@ -49,6 +50,7 @@ type fileConfig struct {
 
 type hostConfig struct {
 	Browser           string `json:"browser"`
+	BrowserLoopback   string `json:"browserLoopback"`
 	Loopback          string `json:"loopback"`
 	OpenBrowserOnSSH  *bool  `json:"openBrowserOnSSH"`
 	IdleTimeout       string `json:"idleTimeout"`
@@ -83,10 +85,14 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 	effective := Effective{
 		Browser: file.DefaultBrowser,
 	}
-	if file.Loopback != "" {
-		effective.LoopbackMode, err = proxy.ParseLoopbackMode(file.Loopback)
+	globalLoopback, err := configuredBrowserLoopback(file.BrowserLoopback, file.Loopback, "global configuration")
+	if err != nil {
+		return Effective{}, err
+	}
+	if globalLoopback != "" {
+		effective.LoopbackMode, err = proxy.ParseLoopbackMode(globalLoopback)
 		if err != nil {
-			return Effective{}, fmt.Errorf("parse global loopback: %w", err)
+			return Effective{}, fmt.Errorf("parse global browserLoopback: %w", err)
 		}
 	}
 	if file.OpenBrowserOnSSH != nil {
@@ -109,10 +115,14 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 		if host.Browser != "" {
 			effective.Browser = host.Browser
 		}
-		if host.Loopback != "" {
-			effective.LoopbackMode, err = proxy.ParseLoopbackMode(host.Loopback)
+		hostLoopback, loopbackErr := configuredBrowserLoopback(host.BrowserLoopback, host.Loopback, "host "+destination.String())
+		if loopbackErr != nil {
+			return Effective{}, loopbackErr
+		}
+		if hostLoopback != "" {
+			effective.LoopbackMode, err = proxy.ParseLoopbackMode(hostLoopback)
 			if err != nil {
-				return Effective{}, fmt.Errorf("parse loopback for %s: %w", destination, err)
+				return Effective{}, fmt.Errorf("parse browserLoopback for %s: %w", destination, err)
 			}
 		}
 		if host.OpenBrowserOnSSH != nil {
@@ -155,4 +165,14 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 	}
 
 	return effective, nil
+}
+
+func configuredBrowserLoopback(current, legacy, location string) (string, error) {
+	if current != "" && legacy != "" {
+		return "", fmt.Errorf("%s sets both browserLoopback and deprecated loopback", location)
+	}
+	if current != "" {
+		return current, nil
+	}
+	return legacy, nil
 }
