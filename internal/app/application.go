@@ -99,6 +99,9 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	if request.Operation == PrintSSHConfig {
 		return Result{Output: fmt.Sprintf("Host %s\n    PermitLocalCommand yes\n    LocalCommand kamui ssh-hook %%n\n", destination)}, nil
 	}
+	if request.Operation == Doctor {
+		return a.runDoctor(ctx, destination, request.JSON)
+	}
 	operation, err := sessionOperation(request.Operation, request.All)
 	if err != nil {
 		return Result{}, err

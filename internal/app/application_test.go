@@ -3,6 +3,7 @@ package app_test
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,21 @@ func TestPrintSSHConfigReturnsSnippetWithoutStartingController(t *testing.T) {
 	want := "Host reyna\n    PermitLocalCommand yes\n    LocalCommand kamui ssh-hook %n\n"
 	if result.Output != want {
 		t.Fatalf("snippet = %q, want %q", result.Output, want)
+	}
+}
+
+func TestDoctorReportsAllLocalAndRemoteChecksWithoutStartingController(t *testing.T) {
+	t.Parallel()
+
+	application := app.New(state.NewLayout(t.TempDir()), &failingStarter{t: t})
+	result, err := application.Execute(context.Background(), app.Request{Operation: app.Doctor, Destination: "localhost"})
+	if err != nil {
+		t.Fatalf("doctor returned error: %v", err)
+	}
+	for _, check := range []string{"SSH executable", "SSH connectivity", "browser discovery", "state directory", "port allocation", "loopback proxy"} {
+		if !strings.Contains(result.Output, check) {
+			t.Errorf("doctor output missing %q:\n%s", check, result.Output)
+		}
 	}
 }
 

@@ -131,7 +131,22 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			Name:      "doctor",
 			ArgsUsage: "SSH_DESTINATION",
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "json"}},
-			Action:    destinationAction("doctor", exactlyOneDestination),
+			Action: func(ctx context.Context, cmd *cli.Command) error {
+				if err := exactlyOneDestination(cmd); err != nil {
+					return err
+				}
+				if application == nil {
+					return notImplemented("doctor")
+				}
+				result, err := application.Execute(ctx, kamuiapp.Request{
+					Operation: kamuiapp.Doctor, Destination: cmd.Args().First(), JSON: cmd.Bool("json"),
+				})
+				if err != nil {
+					return err
+				}
+				_, err = io.WriteString(streams.Out, result.Output)
+				return err
+			},
 		},
 		{Name: "browsers", Action: func(ctx context.Context, cmd *cli.Command) error {
 			if err := noArguments(cmd); err != nil {
