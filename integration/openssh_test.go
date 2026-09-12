@@ -19,8 +19,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/narasaka/kamui/internal/controller"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/ssh"
+	"github.com/narasaka/kamui/internal/state"
+	"github.com/narasaka/kamui/internal/testsupport"
 )
 
 func TestColdStartWithDisposableOpenSSHServer(t *testing.T) {
@@ -78,11 +81,24 @@ func TestColdStartWithDisposableOpenSSHServer(t *testing.T) {
 
 func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t *testing.T) {
 	fixture := startDisposableOpenSSH(t)
-	hookLog := filepath.Join(fixture.root, "hook.log")
-	hookRecorder := filepath.Join(fixture.root, "hook-recorder")
-	hookContents := fmt.Sprintf("#!/bin/sh\nprintf '%%s\\n' \"$1\" >> %q\n", hookLog)
-	if err := os.WriteFile(hookRecorder, []byte(hookContents), 0o700); err != nil {
+	testHome, err := os.MkdirTemp("/tmp", "kamui-hook-home-")
+	if err != nil {
 		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(testHome) })
+	layout := state.NewLayout(filepath.Join(testHome, "Library", "Application Support", "kamui"))
+	launcher := &testsupport.SSHLauncher{}
+	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	server, err := controller.Start(ctx, layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cancel(); _ = server.Close(); _ = manager.Close() })
+	kamuiBinary := filepath.Join(fixture.root, "kamui")
+	build := exec.Command("go", "build", "-o", kamuiBinary, "github.com/narasaka/kamui/cmd/kamui")
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build kamui hook binary: %v: %s", err, output)
 	}
 	clientConfig := filepath.Join(fixture.root, "hook_ssh_config")
 	controlPath := fmt.Sprintf("/tmp/kamui-%d-%%C", fixture.port)
@@ -95,7 +111,7 @@ func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t
     UserKnownHostsFile %s
     StrictHostKeyChecking no
     PermitLocalCommand yes
-    LocalCommand %q %%n
+    LocalCommand env HOME=%q %q ssh-hook %%n
     ControlMaster auto
     ControlPath %q
     ControlPersist 10
@@ -109,7 +125,7 @@ Host kamui-failed-alias
     StrictHostKeyChecking no
     ControlMaster no
 `, fixture.username, fixture.port, fixture.clientKey, filepath.Join(fixture.root, "known_hosts"),
-		hookRecorder, controlPath, fixture.username, fixture.port,
+		testHome, kamuiBinary, controlPath, fixture.username, fixture.port,
 		filepath.Join(fixture.root, "missing-key"), filepath.Join(fixture.root, "known_hosts"))
 	if err := os.WriteFile(clientConfig, []byte(configuration), 0o600); err != nil {
 		t.Fatal(err)
@@ -141,18 +157,24 @@ Host kamui-failed-alias
 	if elapsed := time.Since(started); elapsed > 3*time.Second {
 		t.Fatalf("concurrent hook logins took %v", elapsed)
 	}
-	contents, err := os.ReadFile(hookLog)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lines := strings.Fields(string(contents))
-	if len(lines) != 1 {
-		t.Fatalf("hook executions = %d, want one activation on the multiplex master; log %q", len(lines), contents)
-	}
-	for _, line := range lines {
-		if line != "kamui-hook-alias" {
-			t.Fatalf("LocalCommand %%n = %q, want original alias", line)
+	deadline := time.Now().Add(2 * time.Second)
+	destination, _ := session.ParseDestination("kamui-hook-alias")
+	for {
+		result, statusErr := manager.Execute(context.Background(), session.Command{Operation: session.Status, Destination: destination})
+		if statusErr == nil && result.Session.State == session.SessionConnected {
+			break
 		}
+		if time.Now().After(deadline) {
+			t.Fatalf("kamui ssh-hook did not activate its controller session: %v", statusErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if launcher.Starts() != 1 {
+		t.Fatalf("Kamui OpenSSH transports = %d, want one reused session", launcher.Starts())
+	}
+	arguments := strings.Join(launcher.LastArgs(), " ")
+	if !strings.Contains(arguments, "PermitLocalCommand=no") {
+		t.Fatalf("Kamui child args = %q, want recursion prevention", arguments)
 	}
 
 	if output, err := exec.Command(wrapper, "-o", "BatchMode=yes", "kamui-failed-alias", "true").CombinedOutput(); err == nil {

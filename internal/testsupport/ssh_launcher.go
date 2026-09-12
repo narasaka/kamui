@@ -18,6 +18,7 @@ type SSHLauncher struct {
 	mu        sync.Mutex
 	starts    int
 	processes []*SSHProcess
+	requests  []ssh.StartRequest
 }
 
 func (l *SSHLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
@@ -35,9 +36,20 @@ func (l *SSHLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
 	l.mu.Lock()
 	l.starts++
 	l.processes = append(l.processes, process)
+	l.requests = append(l.requests, request)
 	l.mu.Unlock()
 	go process.accept()
 	return process, nil
+}
+
+// LastArgs returns the most recent simulated OpenSSH argument vector.
+func (l *SSHLauncher) LastArgs() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if len(l.requests) == 0 {
+		return nil
+	}
+	return append([]string(nil), l.requests[len(l.requests)-1].Args...)
 }
 
 // Starts returns the number of simulated OpenSSH children.
