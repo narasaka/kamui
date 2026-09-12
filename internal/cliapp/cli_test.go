@@ -6,6 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -114,6 +117,80 @@ func TestVersionFlagReportsDevelopmentVersion(t *testing.T) {
 	}
 	if got, want := stdout.String(), "dev\n"; got != want {
 		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
+
+func TestPrimaryCommandEnablesLocalFirstLoopbackRouting(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-cli-loopback-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	server, err := controller.Start(ctx, layout, manager)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cancel(); _ = server.Close() })
+	application := kamuiapp.New(layout, nil)
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+
+	if err := command.Run(context.Background(), []string{"kamui", "reyna", "--loopback", "local-first"}); err != nil {
+		t.Fatalf("run primary command: %v", err)
+	}
+	status, err := application.Execute(context.Background(), kamuiapp.Request{Operation: kamuiapp.Status, Destination: "reyna"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "Mac loopback")
+	}))
+	t.Cleanup(backend.Close)
+	backendURL, _ := url.Parse(backend.URL)
+	proxyURL, _ := url.Parse("http://" + status.Session.Proxy.String())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	response, err := client.Get("http://localhost:" + backendURL.Port())
+	if err != nil {
+		t.Fatalf("GET Mac loopback through CLI-configured proxy: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "Mac loopback" {
+		t.Fatalf("body = %q, want Mac loopback", body)
+	}
+	if !strings.Contains(output.String(), "may access genuine Mac localhost services in local-first mode") {
+		t.Fatalf("output = %q, want local-first security warning", output.String())
+	}
+	var repeatedOutput bytes.Buffer
+	repeated := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &repeatedOutput, ErrOut: &repeatedOutput})
+	if err := repeated.Run(context.Background(), []string{"kamui", "reyna", "--loopback", "local-first"}); err != nil {
+		t.Fatalf("repeat primary command: %v", err)
+	}
+	if !strings.Contains(repeatedOutput.String(), "may access genuine Mac localhost services in local-first mode") {
+		t.Fatalf("repeated output = %q, want persistent local-first security warning", repeatedOutput.String())
+	}
+}
+
+func TestPrimaryCommandRejectsInvalidLoopbackMode(t *testing.T) {
+	t.Parallel()
+
+	application := kamuiapp.New(state.NewLayout(t.TempDir()), nil)
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+	err := command.Run(context.Background(), []string{"kamui", "reyna", "--loopback", "sometimes-local"})
+	if err == nil || !strings.Contains(err.Error(), `unsupported loopback mode "sometimes-local"`) {
+		t.Fatalf("error = %v, want unsupported loopback mode", err)
 	}
 }
 

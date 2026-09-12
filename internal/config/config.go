@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 )
 
@@ -22,6 +23,7 @@ type Loader struct {
 // corresponding flag was not supplied.
 type Overrides struct {
 	Browser           *string
+	Loopback          *string
 	OpenBrowserOnSSH  *bool
 	IdleTimeout       *time.Duration
 	StopBrowserOnStop *bool
@@ -30,6 +32,7 @@ type Overrides struct {
 // Effective is the fully resolved configuration for one destination.
 type Effective struct {
 	Browser           string
+	LoopbackMode      proxy.LoopbackMode
 	OpenBrowserOnSSH  bool
 	IdleTimeout       time.Duration
 	StopBrowserOnStop bool
@@ -37,6 +40,7 @@ type Effective struct {
 
 type fileConfig struct {
 	DefaultBrowser    string                `json:"defaultBrowser"`
+	Loopback          string                `json:"loopback"`
 	OpenBrowserOnSSH  *bool                 `json:"openBrowserOnSSH"`
 	IdleTimeout       string                `json:"idleTimeout"`
 	StopBrowserOnStop *bool                 `json:"stopBrowserOnStop"`
@@ -45,6 +49,7 @@ type fileConfig struct {
 
 type hostConfig struct {
 	Browser           string `json:"browser"`
+	Loopback          string `json:"loopback"`
 	OpenBrowserOnSSH  *bool  `json:"openBrowserOnSSH"`
 	IdleTimeout       string `json:"idleTimeout"`
 	StopBrowserOnStop *bool  `json:"stopBrowserOnStop"`
@@ -78,6 +83,12 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 	effective := Effective{
 		Browser: file.DefaultBrowser,
 	}
+	if file.Loopback != "" {
+		effective.LoopbackMode, err = proxy.ParseLoopbackMode(file.Loopback)
+		if err != nil {
+			return Effective{}, fmt.Errorf("parse global loopback: %w", err)
+		}
+	}
 	if file.OpenBrowserOnSSH != nil {
 		effective.OpenBrowserOnSSH = *file.OpenBrowserOnSSH
 	}
@@ -98,6 +109,12 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 		if host.Browser != "" {
 			effective.Browser = host.Browser
 		}
+		if host.Loopback != "" {
+			effective.LoopbackMode, err = proxy.ParseLoopbackMode(host.Loopback)
+			if err != nil {
+				return Effective{}, fmt.Errorf("parse loopback for %s: %w", destination, err)
+			}
+		}
 		if host.OpenBrowserOnSSH != nil {
 			effective.OpenBrowserOnSSH = *host.OpenBrowserOnSSH
 		}
@@ -117,6 +134,12 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 
 	if overrides.Browser != nil {
 		effective.Browser = *overrides.Browser
+	}
+	if overrides.Loopback != nil {
+		effective.LoopbackMode, err = proxy.ParseLoopbackMode(*overrides.Loopback)
+		if err != nil {
+			return Effective{}, fmt.Errorf("parse loopback override: %w", err)
+		}
 	}
 	if overrides.OpenBrowserOnSSH != nil {
 		effective.OpenBrowserOnSSH = *overrides.OpenBrowserOnSSH

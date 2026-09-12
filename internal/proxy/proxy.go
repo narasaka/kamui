@@ -4,6 +4,7 @@ package proxy
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -12,6 +13,7 @@ import (
 	"net/netip"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/narasaka/kamui/internal/routing"
@@ -26,10 +28,40 @@ type Dialers struct {
 	Remote DialFunc
 }
 
+// LoopbackMode controls how explicit loopback destinations are reached.
+type LoopbackMode uint8
+
+const (
+	// RemoteOnly sends explicit loopback destinations through SSH.
+	RemoteOnly LoopbackMode = iota
+	// LocalFirst prefers Mac loopback before considering the remote host.
+	LocalFirst
+)
+
+// ParseLoopbackMode parses a user-facing loopback routing mode.
+func ParseLoopbackMode(value string) (LoopbackMode, error) {
+	switch value {
+	case "remote-only":
+		return RemoteOnly, nil
+	case "local-first":
+		return LocalFirst, nil
+	default:
+		return RemoteOnly, fmt.Errorf("unsupported loopback mode %q", value)
+	}
+}
+
+func (m LoopbackMode) String() string {
+	if m == LocalFirst {
+		return "local-first"
+	}
+	return "remote-only"
+}
+
 // Options controls protocol timeouts. Zero values use safe defaults.
 type Options struct {
 	ReadHeaderTimeout time.Duration
 	ListenAddress     netip.AddrPort
+	LoopbackMode      LoopbackMode
 }
 
 // RunningProxy is a live smart proxy bound to Mac loopback.
@@ -69,7 +101,7 @@ func Start(ctx context.Context, dialers Dialers, options Options) (*RunningProxy
 	activity.touch()
 	trackedListener := &trackingListener{Listener: listener, activity: activity}
 
-	handler := newHandler(dialers)
+	handler := newHandler(dialers, options.LoopbackMode)
 	readHeaderTimeout := options.ReadHeaderTimeout
 	if readHeaderTimeout == 0 {
 		readHeaderTimeout = 10 * time.Second
@@ -118,12 +150,13 @@ func (p *RunningProxy) Close() error {
 }
 
 type handler struct {
-	dialers Dialers
-	reverse *httputil.ReverseProxy
+	dialers      Dialers
+	loopbackMode LoopbackMode
+	reverse      *httputil.ReverseProxy
 }
 
-func newHandler(dialers Dialers) *handler {
-	h := &handler{dialers: dialers}
+func newHandler(dialers Dialers, loopbackMode LoopbackMode) *handler {
+	h := &handler{dialers: dialers, loopbackMode: loopbackMode}
 	h.reverse = &httputil.ReverseProxy{
 		Rewrite: func(request *httputil.ProxyRequest) {
 			scheme := request.In.URL.Scheme
@@ -167,7 +200,7 @@ func (h *handler) serveConnect(w http.ResponseWriter, request *http.Request) {
 	}
 	dial := h.dialers.Direct
 	if plan.Kind == routing.RemoteLoopback {
-		dial = h.dialRemoteLoopback
+		dial = h.dialLoopback
 	}
 	upstream, err := dial(request.Context(), "tcp", plan.Address)
 	if err != nil {
@@ -286,9 +319,43 @@ func (h *handler) dialContext(ctx context.Context, network, address string) (net
 		return nil, err
 	}
 	if plan.Kind == routing.RemoteLoopback {
-		return h.dialRemoteLoopback(ctx, network, plan.Address)
+		return h.dialLoopback(ctx, network, plan.Address)
 	}
 	return h.dialers.Direct(ctx, network, plan.Address)
+}
+
+func (h *handler) dialLoopback(ctx context.Context, network, address string) (net.Conn, error) {
+	if h.loopbackMode == LocalFirst {
+		connection, localErr := h.dialLocalLoopback(ctx, network, address)
+		if localErr == nil {
+			return connection, nil
+		}
+		if !errors.Is(localErr, syscall.ECONNREFUSED) {
+			return nil, localErr
+		}
+	}
+	return h.dialRemoteLoopback(ctx, network, address)
+}
+
+func (h *handler) dialLocalLoopback(ctx context.Context, network, ipv4Address string) (net.Conn, error) {
+	connection, ipv4Err := h.dialers.Direct(ctx, network, ipv4Address)
+	if ipv4Err == nil {
+		return connection, nil
+	}
+	if ctx.Err() != nil || !errors.Is(ipv4Err, syscall.ECONNREFUSED) {
+		return nil, ipv4Err
+	}
+
+	_, port, err := net.SplitHostPort(ipv4Address)
+	if err != nil {
+		return nil, ipv4Err
+	}
+	ipv6Address := net.JoinHostPort("::1", port)
+	connection, ipv6Err := h.dialers.Direct(ctx, network, ipv6Address)
+	if ipv6Err == nil {
+		return connection, nil
+	}
+	return nil, fmt.Errorf("Mac loopback unavailable over IPv4 (%v) and IPv6: %w", ipv4Err, ipv6Err)
 }
 
 func (h *handler) dialRemoteLoopback(ctx context.Context, network, ipv4Address string) (net.Conn, error) {
