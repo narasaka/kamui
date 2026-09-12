@@ -29,3 +29,23 @@ jobs:
       - name: Build macOS release binaries
         if: runner.os == 'macOS'
         run: scripts/package.sh ci
+
+  browser-release-gate:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install release-gate browsers and certificate tooling
+        run: |
+          brew list --cask google-chrome >/dev/null 2>&1 || brew install --cask google-chrome
+          brew list --cask brave-browser >/dev/null 2>&1 || brew install --cask brave-browser
+          brew list --cask firefox >/dev/null 2>&1 || brew install --cask firefox
+          brew list --formula nss >/dev/null 2>&1 || brew install nss
+      - name: Gate Chrome, Brave, and Firefox protocols
+        env:
+          KAMUI_BROWSER_TESTS: "1"
+          KAMUI_REQUIRE_ALL_BROWSERS: "1"
+        run: go test -race ./integration -run TestInstalledBrowsersUseKamuiProxy -count=1 -v

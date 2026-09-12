@@ -119,6 +119,9 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 		installed := installed
 		t.Run(installed.id, func(t *testing.T) {
 			if _, err := os.Stat(installed.path); err != nil {
+				if os.Getenv("KAMUI_REQUIRE_ALL_BROWSERS") == "1" {
+					t.Fatalf("required %s browser is not installed at %s", installed.id, installed.path)
+				}
 				t.Skipf("%s is not installed", installed.id)
 			}
 			launcher := &headlessLauncher{
@@ -147,10 +150,16 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 	t.Run("firefox", func(t *testing.T) {
 		const path = "/Applications/Firefox.app/Contents/MacOS/firefox"
 		if _, err := os.Stat(path); err != nil {
+			if os.Getenv("KAMUI_REQUIRE_ALL_BROWSERS") == "1" {
+				t.Fatalf("required Firefox browser is not installed at %s", path)
+			}
 			t.Skip("Firefox is not installed")
 		}
 		certutil, err := exec.LookPath("certutil")
 		if err != nil {
+			if os.Getenv("KAMUI_REQUIRE_ALL_BROWSERS") == "1" {
+				t.Fatal("certutil is required for the Firefox release gate")
+			}
 			t.Skip("certutil is required to trust the disposable HTTPS certificate")
 		}
 		launcher := &headlessLauncher{prefix: []string{"-headless"}, reports: reports}
