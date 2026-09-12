@@ -114,6 +114,14 @@ func TestManagerStopsReconnectsWhenAuthenticationNeedsUser(t *testing.T) {
 	if result.Session.State != session.SessionConnected || launcher.count() != 3 {
 		t.Fatalf("rerun state=%v starts=%d, want connected after third start", result.Session.State, launcher.count())
 	}
+	launcher.terminateConnected()
+	deadline = time.Now().Add(2 * time.Second)
+	for launcher.count() < 4 && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := launcher.count(); got != 4 {
+		t.Fatalf("OpenSSH starts after second disconnect = %d, want monitor to reconnect", got)
+	}
 }
 
 func TestManagerUsesUnattendedSSHForHookActivation(t *testing.T) {

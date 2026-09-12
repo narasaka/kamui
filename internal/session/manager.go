@@ -87,18 +87,19 @@ type Manager struct {
 }
 
 type managedSession struct {
-	mu             sync.RWMutex
-	ctx            context.Context
-	cancel         context.CancelFunc
-	destination    Destination
-	connection     *ssh.Connection
-	proxy          *proxy.RunningProxy
-	lastError      error
-	requiresAuth   bool
-	browserAdapter browser.Adapter
-	browserProfile browser.Profile
-	idleTimeout    time.Duration
-	stopBrowser    bool
+	mu              sync.RWMutex
+	ctx             context.Context
+	cancel          context.CancelFunc
+	destination     Destination
+	connection      *ssh.Connection
+	proxy           *proxy.RunningProxy
+	lastError       error
+	requiresAuth    bool
+	browserAdapter  browser.Adapter
+	browserProfile  browser.Profile
+	idleTimeout     time.Duration
+	stopBrowser     bool
+	reconnectPaused bool
 }
 
 // NewManager creates an empty session manager.
@@ -164,6 +165,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 			existing.connection = connection
 			existing.lastError = nil
 			existing.requiresAuth = false
+			existing.reconnectPaused = false
 			existing.mu.Unlock()
 			_ = old.Close()
 		}
@@ -361,8 +363,15 @@ func (m *Manager) monitor(managed *managedSession) {
 		if managed.snapshot().State != SessionUnavailable {
 			continue
 		}
+		managed.mu.RLock()
+		reconnectPaused := managed.reconnectPaused
+		managed.mu.RUnlock()
+		if reconnectPaused {
+			continue
+		}
 
 		delay := 100 * time.Millisecond
+		reconnected := false
 		for attempt := 0; attempt < attempts; attempt++ {
 			m.logger.Info("Kamui session lifecycle", "event", "ssh_reconnect_attempt", "session_key", managed.destination.Key(), "attempt", attempt+1)
 			connection, err := m.transport.ConnectUnattended(managed.ctx, managed.destination.String())
@@ -371,9 +380,11 @@ func (m *Manager) monitor(managed *managedSession) {
 				old := managed.connection
 				managed.connection = connection
 				managed.lastError = nil
+				managed.reconnectPaused = false
 				managed.mu.Unlock()
 				_ = old.Close()
 				m.logger.Info("Kamui session lifecycle", "event", "ssh_reconnected", "session_key", managed.destination.Key())
+				reconnected = true
 				break
 			}
 			managed.mu.Lock()
@@ -381,9 +392,10 @@ func (m *Manager) monitor(managed *managedSession) {
 			var connectError *ssh.ConnectError
 			if errors.As(err, &connectError) && connectError.Kind != ssh.TransientFailure {
 				managed.requiresAuth = true
+				managed.reconnectPaused = true
 				managed.mu.Unlock()
 				m.logger.Warn("Kamui session lifecycle", "event", "ssh_authentication_required", "session_key", managed.destination.Key(), "failure_kind", connectFailureKind(err))
-				return
+				break
 			}
 			managed.mu.Unlock()
 			select {
@@ -395,7 +407,11 @@ func (m *Manager) monitor(managed *managedSession) {
 				delay *= 2
 			}
 		}
-		return
+		if !reconnected {
+			managed.mu.Lock()
+			managed.reconnectPaused = true
+			managed.mu.Unlock()
+		}
 	}
 }
 
