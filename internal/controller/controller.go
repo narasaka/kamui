@@ -338,6 +338,7 @@ func (s *Server) Close() error {
 		s.closeError = s.listener.Close()
 		<-s.done
 		s.handlers.Wait()
+		s.closeError = errors.Join(s.closeError, s.manager.Close())
 		if err := os.Remove(s.layout.Socket); err != nil && !os.IsNotExist(err) {
 			s.closeError = errors.Join(s.closeError, err)
 		}

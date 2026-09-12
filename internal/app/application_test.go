@@ -170,17 +170,19 @@ func TestApplicationRestartsStaleControllerAndRetriesEnsure(t *testing.T) {
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	layout := state.NewLayout(root)
 	launcher := &testsupport.SSHLauncher{}
-	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
-	t.Cleanup(func() { _ = manager.Close() })
+	staleManager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = staleManager.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
-	stale, err := controller.StartWithIdentity(ctx, layout, manager, controller.Identity{
+	stale, err := controller.StartWithIdentity(ctx, layout, staleManager, controller.Identity{
 		Protocol: controller.ProtocolVersion, Build: "older-installed-build",
 	})
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	starter := &inProcessStarter{ctx: ctx, manager: manager}
+	replacementManager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = replacementManager.Close() })
+	starter := &inProcessStarter{ctx: ctx, manager: replacementManager}
 	application := app.New(layout, starter)
 
 	result, err := application.Execute(context.Background(), app.Request{Operation: app.Ensure, Destination: "reyna"})
@@ -245,17 +247,19 @@ func TestConcurrentUpgradeDetectionStartsOneReplacementController(t *testing.T) 
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	layout := state.NewLayout(root)
-	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
-	t.Cleanup(func() { _ = manager.Close() })
+	staleManager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = staleManager.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
-	stale, err := controller.StartWithIdentity(ctx, layout, manager, controller.Identity{
+	stale, err := controller.StartWithIdentity(ctx, layout, staleManager, controller.Identity{
 		Protocol: controller.ProtocolVersion, Build: "older-installed-build",
 	})
 	if err != nil {
 		cancel()
 		t.Fatal(err)
 	}
-	starter := &inProcessStarter{ctx: ctx, manager: manager}
+	replacementManager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = replacementManager.Close() })
+	starter := &inProcessStarter{ctx: ctx, manager: replacementManager}
 
 	const callers = 8
 	errors := make(chan error, callers)
