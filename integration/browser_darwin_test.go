@@ -195,6 +195,111 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 	}
 }
 
+func TestChromeReconnectsWebSocketAfterRemoteServerRestart(t *testing.T) {
+	if os.Getenv("KAMUI_BROWSER_TESTS") != "1" {
+		t.Skip("set KAMUI_BROWSER_TESTS=1 to launch installed browsers headlessly")
+	}
+	const chromePath = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+	if _, err := os.Stat(chromePath); err != nil {
+		t.Skip("Chrome is not installed")
+	}
+	webSocketURL, stopWebSocket := restartingWebSocketServer(t)
+	defer stopWebSocket()
+	reports := make(chan string, 1)
+	reportServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		reports <- request.URL.Query().Get("value")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer reportServer.Close()
+	wsPort := strings.TrimPrefix(webSocketURL, "ws://127.0.0.1:")
+	reportPort := strings.TrimPrefix(reportServer.URL, "http://127.0.0.1:")
+	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprintf(w, `<script type="module">
+const once=()=>new Promise((resolve,reject)=>{const socket=new WebSocket("ws://localhost:%s");socket.onmessage=e=>resolve(e.data);socket.onerror=reject;});
+const first=await once();
+await new Promise(resolve=>setTimeout(resolve, 700));
+let second;
+for(let attempt=0;attempt<20&&!second;attempt++){try{second=await once();}catch{await new Promise(resolve=>setTimeout(resolve,100));}}
+await fetch("http://localhost:%s/report?value="+encodeURIComponent(first+"|"+second));
+</script>`, wsPort, reportPort)
+	}))
+	defer page.Close()
+
+	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	defer manager.Close()
+	destination, _ := session.ParseDestination("browser-hmr-gate")
+	result, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &headlessLauncher{
+		prefix:  []string{"--headless=new", "--disable-gpu", "--disable-background-networking", "--disable-component-update", "--disable-sync"},
+		reports: reports, want: []string{"before-restart", "after-restart"},
+	}
+	adapter := browser.NewChromiumAdapter("chrome", []string{chromePath}, launcher)
+	profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
+		Key: destination.Key(), Proxy: result.Session.Proxy, ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
+	}, browser.Installation{ID: "chrome", Executable: chromePath})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
+	if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
+		t.Fatalf("HMR-style reconnect gate: %v", err)
+	}
+}
+
+func restartingWebSocketServer(t *testing.T) (string, func()) {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().String()
+	firstDone := make(chan struct{}, 1)
+	first := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		serveBrowserWebSocket(w, request, "before-restart")
+		firstDone <- struct{}{}
+	})}
+	go func() { _ = first.Serve(listener) }()
+	ctx, cancel := context.WithCancel(context.Background())
+	secondReady := make(chan *http.Server, 1)
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-firstDone:
+		}
+		_ = first.Close()
+		for {
+			secondListener, err := net.Listen("tcp4", address)
+			if err == nil {
+				second := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+					serveBrowserWebSocket(w, request, "after-restart")
+				})}
+				secondReady <- second
+				_ = second.Serve(secondListener)
+				return
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+	return "ws://" + address, func() {
+		cancel()
+		_ = first.Close()
+		select {
+		case second := <-secondReady:
+			_ = second.Close()
+		case <-time.After(time.Second):
+		}
+	}
+}
+
 func requiredBrowser(id string) bool {
 	for _, required := range strings.Split(os.Getenv("KAMUI_REQUIRED_BROWSERS"), ",") {
 		if strings.TrimSpace(required) == id {
