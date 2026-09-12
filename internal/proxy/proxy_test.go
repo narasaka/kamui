@@ -198,7 +198,7 @@ func TestProxyTunnelsHTTPSWithoutTerminatingTLS(t *testing.T) {
 	proxyURL, _ := url.Parse("http://" + running.Addr().String())
 	client := &http.Client{Transport: &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // test server certificate
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 	}}
 
 	response, err := client.Get("https://localhost:3443/secret")
