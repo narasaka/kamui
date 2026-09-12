@@ -30,7 +30,7 @@ func TestTransportStartsSafeOpenSSHAndWaitsForSOCKSReadiness(t *testing.T) {
 		Launcher:         launcher,
 		ReadinessTimeout: time.Second,
 	}
-	connection, err := transport.Connect(context.Background(), destination)
+	connection, err := transport.Connect(context.Background(), destination.String())
 	if err != nil {
 		t.Fatalf("Connect returned error: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestTransportRetriesWhenSOCKSPortLosesBindRace(t *testing.T) {
 
 	launcher := &bindRaceLauncher{}
 	destination, _ := session.ParseDestination("reyna")
-	connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).Connect(context.Background(), destination)
+	connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).Connect(context.Background(), destination.String())
 	if err != nil {
 		t.Fatalf("Connect returned error after bind race: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestConnectionDialsTargetsThroughSOCKS5(t *testing.T) {
 
 	launcher := &socksLauncher{}
 	destination, _ := session.ParseDestination("reyna")
-	connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).Connect(context.Background(), destination)
+	connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).Connect(context.Background(), destination.String())
 	if err != nil {
 		t.Fatal(err)
 	}

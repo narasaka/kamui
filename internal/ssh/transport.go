@@ -13,8 +13,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/narasaka/kamui/internal/session"
 )
 
 // State describes the availability of an SSH connection.
@@ -69,7 +67,7 @@ type Transport struct {
 }
 
 // Connect starts OpenSSH and returns only after its SOCKS listener is ready.
-func (t Transport) Connect(ctx context.Context, destination session.Destination) (*Connection, error) {
+func (t Transport) Connect(ctx context.Context, destination string) (*Connection, error) {
 	var lastErr error
 	for range 3 {
 		connection, stderr, err := t.connectAttempt(ctx, destination)
@@ -84,7 +82,7 @@ func (t Transport) Connect(ctx context.Context, destination session.Destination)
 	return nil, fmt.Errorf("allocate OpenSSH SOCKS port after retries: %w", lastErr)
 }
 
-func (t Transport) connectAttempt(ctx context.Context, destination session.Destination) (*Connection, string, error) {
+func (t Transport) connectAttempt(ctx context.Context, destination string) (*Connection, string, error) {
 	address, err := availableLoopbackAddress()
 	if err != nil {
 		return nil, "", err
@@ -107,7 +105,7 @@ func (t Transport) connectAttempt(ctx context.Context, destination session.Desti
 			"-o", "ServerAliveInterval=15",
 			"-o", "ServerAliveCountMax=3",
 			"-o", "PermitLocalCommand=no",
-			destination.String(),
+			destination,
 		},
 		Stdin:  defaultReader(t.Stdin),
 		Stdout: defaultWriter(t.Stdout),
