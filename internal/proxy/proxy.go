@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/narasaka/kamui/internal/routing"
@@ -37,6 +38,13 @@ type RunningProxy struct {
 	listener  net.Listener
 	closeOnce sync.Once
 	closeErr  error
+	activity  *activity
+}
+
+// Activity is the observable connection state used by idle policy.
+type Activity struct {
+	Connections  int64
+	LastActivity time.Time
 }
 
 // Start binds a new proxy to an ephemeral IPv4 loopback port.
@@ -49,6 +57,9 @@ func Start(ctx context.Context, dialers Dialers, options Options) (*RunningProxy
 		return nil, fmt.Errorf("listen on loopback: %w", err)
 	}
 	address := listener.Addr().(*net.TCPAddr).AddrPort()
+	activity := &activity{}
+	activity.touch()
+	trackedListener := &trackingListener{Listener: listener, activity: activity}
 
 	handler := newHandler(dialers)
 	readHeaderTimeout := options.ReadHeaderTimeout
@@ -60,15 +71,23 @@ func Start(ctx context.Context, dialers Dialers, options Options) (*RunningProxy
 		ReadHeaderTimeout: readHeaderTimeout,
 		IdleTimeout:       90 * time.Second,
 	}
-	running := &RunningProxy{addr: address, server: server, listener: listener}
+	running := &RunningProxy{addr: address, server: server, listener: trackedListener, activity: activity}
 	go func() {
 		<-ctx.Done()
 		_ = running.Close()
 	}()
 	go func() {
-		_ = server.Serve(listener)
+		_ = server.Serve(trackedListener)
 	}()
 	return running, nil
+}
+
+// Activity reports active TCP connections and the latest observed I/O.
+func (p *RunningProxy) Activity() Activity {
+	return Activity{
+		Connections:  p.activity.connections.Load(),
+		LastActivity: time.Unix(0, p.activity.last.Load()),
+	}
 }
 
 // Addr returns the loopback address clients should configure as their HTTP
@@ -187,9 +206,70 @@ func bridgeTunnel(client net.Conn, buffered *bufio.ReadWriter, upstream net.Conn
 }
 
 func closeWrite(connection net.Conn) {
-	if tcp, ok := connection.(*net.TCPConn); ok {
-		_ = tcp.CloseWrite()
+	if writer, ok := connection.(interface{ CloseWrite() error }); ok {
+		_ = writer.CloseWrite()
 	}
+}
+
+type activity struct {
+	connections atomic.Int64
+	last        atomic.Int64
+}
+
+func (a *activity) touch() { a.last.Store(time.Now().UnixNano()) }
+
+type trackingListener struct {
+	net.Listener
+	activity *activity
+}
+
+func (l *trackingListener) Accept() (net.Conn, error) {
+	connection, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	l.activity.connections.Add(1)
+	l.activity.touch()
+	return &trackingConnection{Conn: connection, activity: l.activity}, nil
+}
+
+type trackingConnection struct {
+	net.Conn
+	activity  *activity
+	closeOnce sync.Once
+}
+
+func (c *trackingConnection) Read(buffer []byte) (int, error) {
+	count, err := c.Conn.Read(buffer)
+	if count > 0 {
+		c.activity.touch()
+	}
+	return count, err
+}
+
+func (c *trackingConnection) Write(buffer []byte) (int, error) {
+	count, err := c.Conn.Write(buffer)
+	if count > 0 {
+		c.activity.touch()
+	}
+	return count, err
+}
+
+func (c *trackingConnection) Close() error {
+	var err error
+	c.closeOnce.Do(func() {
+		err = c.Conn.Close()
+		c.activity.connections.Add(-1)
+		c.activity.touch()
+	})
+	return err
+}
+
+func (c *trackingConnection) CloseWrite() error {
+	if writer, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return writer.CloseWrite()
+	}
+	return nil
 }
 
 func (h *handler) dialContext(ctx context.Context, network, address string) (net.Conn, error) {

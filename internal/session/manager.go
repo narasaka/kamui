@@ -33,6 +33,7 @@ type Command struct {
 	Browser     browser.Selection
 	URLs        []string
 	SkipBrowser bool
+	IdleTimeout time.Duration
 }
 
 // SessionState is the user-visible lifecycle state.
@@ -90,6 +91,7 @@ type managedSession struct {
 	requiresAuth   bool
 	browserAdapter browser.Adapter
 	browserProfile browser.Profile
+	idleTimeout    time.Duration
 }
 
 // NewManager creates an empty session manager.
@@ -161,7 +163,10 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 		return Result{}, fmt.Errorf("SSH authentication or connection failed for %s: %w", destination, err)
 	}
 	sessionContext, cancel := context.WithCancel(m.ctx)
-	managed := &managedSession{ctx: sessionContext, cancel: cancel, destination: destination, connection: connection}
+	managed := &managedSession{
+		ctx: sessionContext, cancel: cancel, destination: destination,
+		connection: connection, idleTimeout: command.IdleTimeout,
+	}
 	runningProxy, err := proxy.Start(m.ctx, proxy.Dialers{
 		Direct: (&net.Dialer{}).DialContext,
 		Remote: func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -313,6 +318,11 @@ func (m *Manager) monitor(managed *managedSession) {
 			return
 		case <-ticker.C:
 		}
+		activity := managed.proxy.Activity()
+		if managed.idleTimeout > 0 && activity.Connections == 0 && time.Since(activity.LastActivity) >= managed.idleTimeout {
+			m.expire(managed)
+			return
+		}
 		if managed.snapshot().State != SessionUnavailable {
 			continue
 		}
@@ -349,6 +359,18 @@ func (m *Manager) monitor(managed *managedSession) {
 		}
 		return
 	}
+}
+
+func (m *Manager) expire(managed *managedSession) {
+	m.mu.Lock()
+	key := managed.destination.Key()
+	if m.sessions[key] != managed {
+		m.mu.Unlock()
+		return
+	}
+	delete(m.sessions, key)
+	m.mu.Unlock()
+	_ = managed.close()
 }
 
 // Close stops all proxies and child processes.

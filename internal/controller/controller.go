@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/session"
@@ -59,6 +60,7 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 		URLs:        command.URLs,
 		Async:       async,
 		SkipBrowser: command.SkipBrowser,
+		IdleTimeout: command.IdleTimeout,
 	}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return session.Result{}, fmt.Errorf("send controller command: %w", err)
@@ -179,6 +181,7 @@ func (s *Server) handle(connection net.Conn) {
 	command := session.Command{
 		Operation: request.Operation, Destination: destination, Browser: request.Browser, URLs: request.URLs,
 		SkipBrowser: request.SkipBrowser,
+		IdleTimeout: request.IdleTimeout,
 	}
 	if request.Async {
 		_ = json.NewEncoder(connection).Encode(wireResponse{})
@@ -251,6 +254,7 @@ type wireRequest struct {
 	URLs        []string          `json:"urls,omitempty"`
 	Async       bool              `json:"async,omitempty"`
 	SkipBrowser bool              `json:"skipBrowser,omitempty"`
+	IdleTimeout time.Duration     `json:"idleTimeout,omitempty"`
 }
 
 type wireStatus struct {

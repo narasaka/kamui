@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -179,6 +180,30 @@ func TestManagerListsAndStopsAllSessions(t *testing.T) {
 	listed, err = manager.Execute(context.Background(), session.Command{Operation: session.Status})
 	if err != nil || len(listed.Sessions) != 0 {
 		t.Fatalf("sessions after stop all = %#v, error %v", listed.Sessions, err)
+	}
+}
+
+func TestManagerExpiresSessionAfterConfiguredProxyIdleTimeout(t *testing.T) {
+	t.Parallel()
+
+	manager := session.NewManager(ssh.Transport{Launcher: &managerLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	if _, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, IdleTimeout: 150 * time.Millisecond,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		_, err := manager.Execute(context.Background(), session.Command{Operation: session.Status, Destination: destination})
+		if err != nil && strings.Contains(err.Error(), "no Kamui session") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("session did not expire after idle timeout")
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 
