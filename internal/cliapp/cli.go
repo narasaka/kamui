@@ -83,9 +83,9 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 					return err
 				}
 				if cmd.NArg() == 0 {
-					return printStatuses(streams.Out, result.Sessions)
+					return printStatuses(streams.Out, result.Sessions, cmd.Bool("verbose"))
 				}
-				return printStatuses(streams.Out, []session.SessionStatus{result.Session})
+				return printStatuses(streams.Out, []session.SessionStatus{result.Session}, cmd.Bool("verbose"))
 			},
 		},
 		{
@@ -216,17 +216,36 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	return command
 }
 
-func printStatuses(writer io.Writer, statuses []session.SessionStatus) error {
-	if _, err := fmt.Fprintln(writer, "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH"); err != nil {
+func printStatuses(writer io.Writer, statuses []session.SessionStatus, verbose bool) error {
+	header := "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH"
+	if verbose {
+		header += "\tLAST ERROR"
+	}
+	if _, err := fmt.Fprintln(writer, header); err != nil {
 		return err
 	}
 	for _, status := range statuses {
-		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
-			status.Destination, sessionState(status.State), status.Browser, status.Proxy, sessionState(status.State)); err != nil {
+		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s",
+			status.Destination, sessionState(status.State), status.Browser, status.Proxy, sshState(status.State))
+		if verbose {
+			lastError := ""
+			if status.LastError != nil {
+				lastError = status.LastError.Error()
+			}
+			line += "\t" + lastError
+		}
+		if _, err := fmt.Fprintln(writer, line); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func sshState(state session.SessionState) string {
+	if state == session.SessionConnected {
+		return "healthy"
+	}
+	return sessionState(state)
 }
 
 func sessionState(state session.SessionState) string {
