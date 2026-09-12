@@ -59,6 +59,9 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				return err
 			}
 			_, err = fmt.Fprintf(streams.Out, "%s connected; proxy %s; browser %s\n", destination, result.Session.Proxy, result.Session.Browser)
+			if err == nil && result.ShowSecurityWarning && streams.ErrOut != nil {
+				_, err = fmt.Fprintln(streams.ErrOut, "WARNING: Remote content receives localhost origin trust in this dedicated profile; genuine Mac localhost is unavailable there.")
+			}
 			return err
 		},
 	}

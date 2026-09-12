@@ -45,8 +45,9 @@ type Request struct {
 // Result is the observable command result.
 type Result struct {
 	session.Result
-	Output        string
-	Installations []browser.Installation
+	Output              string
+	Installations       []browser.Installation
+	ShowSecurityWarning bool
 }
 
 // Starter starts the absent controller at the operating-system process seam.
@@ -149,7 +150,14 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 				return Result{}, fmt.Errorf("remember browser selection: %w", err)
 			}
 		}
-		return Result{Result: result}, nil
+		showWarning := false
+		if request.Operation == Ensure {
+			showWarning, err = a.layout.TakeFirstRunWarning()
+			if err != nil {
+				return Result{}, err
+			}
+		}
+		return Result{Result: result, ShowSecurityWarning: showWarning}, nil
 	}
 	if !controllerUnavailable(err) {
 		return Result{}, err
@@ -170,7 +178,14 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 					return Result{}, fmt.Errorf("remember browser selection: %w", err)
 				}
 			}
-			return Result{Result: result}, nil
+			showWarning := false
+			if request.Operation == Ensure {
+				showWarning, err = a.layout.TakeFirstRunWarning()
+				if err != nil {
+					return Result{}, err
+				}
+			}
+			return Result{Result: result, ShowSecurityWarning: showWarning}, nil
 		}
 		if !controllerUnavailable(err) {
 			return Result{}, err

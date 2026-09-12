@@ -20,6 +20,7 @@ type Layout struct {
 	State    string
 	Profiles string
 	Logs     string
+	FirstRun string
 }
 
 // NewLayout derives a complete layout from an application-support root.
@@ -34,7 +35,30 @@ func NewLayout(root string) Layout {
 		State:    stateRoot,
 		Profiles: filepath.Join(root, "profiles"),
 		Logs:     filepath.Join(root, "logs"),
+		FirstRun: filepath.Join(stateRoot, "security-warning-shown"),
 	}
+}
+
+// TakeFirstRunWarning atomically returns true to exactly one successful caller.
+func (l Layout) TakeFirstRunWarning() (bool, error) {
+	if err := l.Ensure(); err != nil {
+		return false, err
+	}
+	file, err := os.OpenFile(l.FirstRun, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if os.IsExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("record first-run warning: %w", err)
+	}
+	if _, err := file.WriteString("Remote content receives localhost origin treatment in Kamui profiles.\n"); err != nil {
+		file.Close()
+		return false, err
+	}
+	if err := file.Close(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Ensure creates all directories with user-only permissions.

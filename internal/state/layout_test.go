@@ -53,3 +53,20 @@ func TestLayoutRemembersSuccessfulBrowserPerExactDestination(t *testing.T) {
 		t.Fatalf("PreviousBrowser = %q, want firefox", got)
 	}
 }
+
+func TestLayoutReturnsSecurityWarningOnlyOnFirstSuccessfulUse(t *testing.T) {
+	t.Parallel()
+
+	layout := state.NewLayout(t.TempDir())
+	first, err := layout.TakeFirstRunWarning()
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := layout.TakeFirstRunWarning()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !first || second {
+		t.Fatalf("warning results = %v then %v, want true then false", first, second)
+	}
+}
