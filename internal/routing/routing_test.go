@@ -43,3 +43,17 @@ func TestPlanRoutesOnlyExplicitLoopbackSyntaxThroughSSH(t *testing.T) {
 		})
 	}
 }
+
+func TestPlanRejectsMalformedTargetsAndPorts(t *testing.T) {
+	t.Parallel()
+
+	for _, authority := range []string{"", "localhost:0", "localhost:65536", "[::1", "user@localhost:80", "localhost/path"} {
+		authority := authority
+		t.Run(authority, func(t *testing.T) {
+			t.Parallel()
+			if _, err := routing.Plan(authority, 0); err == nil {
+				t.Fatalf("Plan(%q, 0) succeeded, want malformed-target error", authority)
+			}
+		})
+	}
+}

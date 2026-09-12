@@ -121,6 +121,22 @@ func TestConnectionDialsTargetsThroughSOCKS5(t *testing.T) {
 	}
 }
 
+func TestConnectionReturnsSOCKSFailureCode(t *testing.T) {
+	t.Parallel()
+
+	launcher := &socksLauncher{replyCode: 5}
+	connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).Connect(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	_, err = connection.DialContext(context.Background(), "tcp", "127.0.0.1:3999")
+	var socksError *ssh.SOCKSError
+	if !errors.As(err, &socksError) || socksError.Code != 5 {
+		t.Fatalf("DialContext error = %v, want SOCKS code 5", err)
+	}
+}
+
 type readyLauncher struct {
 	request ssh.StartRequest
 	address string
@@ -159,6 +175,7 @@ type listeningProcess struct {
 type socksLauncher struct {
 	mu        sync.Mutex
 	requested string
+	replyCode byte
 }
 
 type bindRaceLauncher struct {
@@ -231,7 +248,7 @@ func (l *socksLauncher) handle(connection net.Conn) {
 	l.mu.Lock()
 	l.requested = net.JoinHostPort(net.IP(address).String(), fmt.Sprint(binary.BigEndian.Uint16(port)))
 	l.mu.Unlock()
-	if _, err := connection.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+	if _, err := connection.Write([]byte{5, l.replyCode, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil || l.replyCode != 0 {
 		return
 	}
 	_, _ = io.Copy(connection, connection)
