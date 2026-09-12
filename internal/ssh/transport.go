@@ -170,7 +170,7 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 	if launcher == nil {
 		launcher = execLauncher{}
 	}
-	var stderr bytes.Buffer
+	var stderr synchronizedBuffer
 	arguments := []string{
 		"-N", "-T", "-D", address,
 		"-o", "ExitOnForwardFailure=yes",
@@ -304,6 +304,23 @@ func availableLoopbackAddress() (string, error) {
 }
 
 type execLauncher struct{}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(value []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(value)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
 
 func (execLauncher) Start(request StartRequest) (Process, error) {
 	command := exec.Command(request.Path, request.Args...)
