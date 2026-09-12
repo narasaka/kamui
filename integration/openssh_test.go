@@ -24,6 +24,7 @@ import (
 	"github.com/narasaka/kamui/internal/ssh"
 	"github.com/narasaka/kamui/internal/state"
 	"github.com/narasaka/kamui/internal/testsupport"
+	"github.com/narasaka/kamui/internal/version"
 )
 
 func TestColdStartWithDisposableOpenSSHServer(t *testing.T) {
@@ -92,19 +93,25 @@ func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t
 		stateRoot = filepath.Join(testHome, "Library", "Application Support", "kamui")
 	}
 	layout := state.NewLayout(stateRoot)
-	launcher := &testsupport.SSHLauncher{}
-	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
-	ctx, cancel := context.WithCancel(context.Background())
-	server, err := controller.Start(ctx, layout, manager)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { cancel(); _ = server.Close(); _ = manager.Close() })
 	kamuiBinary := filepath.Join(fixture.root, "kamui")
 	build := exec.Command("go", "build", "-o", kamuiBinary, "github.com/narasaka/kamui/cmd/kamui")
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build kamui hook binary: %v: %s", err, output)
 	}
+	buildIdentity, err := version.ExecutableIdentity(kamuiBinary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	launcher := &testsupport.SSHLauncher{}
+	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	ctx, cancel := context.WithCancel(context.Background())
+	server, err := controller.StartWithIdentity(ctx, layout, manager, controller.Identity{
+		Protocol: controller.ProtocolVersion, Build: buildIdentity,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cancel(); _ = server.Close(); _ = manager.Close() })
 	clientConfig := filepath.Join(fixture.root, "hook_ssh_config")
 	controlPath := fmt.Sprintf("/tmp/kamui-%d-%%C", fixture.port)
 	configuration := fmt.Sprintf(`Host kamui-hook-alias

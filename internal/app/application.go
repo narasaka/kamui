@@ -16,6 +16,7 @@ import (
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/state"
+	"github.com/narasaka/kamui/internal/version"
 )
 
 // Operation is a user-visible Kamui command.
@@ -63,6 +64,7 @@ type Application struct {
 	starter  Starter
 	config   config.Loader
 	browsers *browser.Catalog
+	identity controller.Identity
 }
 
 // New creates a command gateway for one user state root.
@@ -79,6 +81,7 @@ func NewWithBrowsers(layout state.Layout, starter Starter, browsers *browser.Cat
 		layout: layout, client: controller.Client{Layout: layout}, starter: starter,
 		config:   config.Loader{Path: layout.Config},
 		browsers: browsers,
+		identity: controller.Identity{Protocol: controller.ProtocolVersion, Build: version.BuildIdentity()},
 	}
 }
 
@@ -154,37 +157,117 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		}
 		return a.client.Execute(ctx, command)
 	}
-	result, err := call()
-	if err == nil {
-		return a.completeResult(destination, request.Operation, result)
-	}
-	if !controllerUnavailable(err) {
+	if err := a.ensureCompatibleController(ctx); err != nil {
 		return Result{}, err
 	}
-	if err := a.starter.Start(ctx, a.layout); err != nil && !strings.Contains(err.Error(), "another Kamui controller") {
-		return Result{}, fmt.Errorf("start Kamui controller: %w", err)
+	result, err := call()
+	if err != nil {
+		return Result{}, err
+	}
+	return a.completeResult(destination, request.Operation, result)
+}
+
+func (a *Application) ensureCompatibleController(ctx context.Context) error {
+	identity, err := a.client.Identity(ctx)
+	if err == nil && identitiesMatch(identity, a.identity) {
+		return nil
+	}
+	if err != nil && !controllerUnavailable(err) {
+		return err
 	}
 
+	if err == nil {
+		if logErr := a.logControllerRestart(identity); logErr != nil {
+			return logErr
+		}
+		if identity.Legacy {
+			err = a.client.ShutdownLegacy(ctx, identity)
+		} else {
+			err = a.client.Shutdown(ctx, identity)
+		}
+		if err != nil {
+			current, probeErr := a.client.Identity(ctx)
+			if probeErr == nil && identitiesMatch(current, a.identity) {
+				return nil
+			}
+			if probeErr == nil && current.Protocol == identity.Protocol && current.Build == identity.Build && current.Legacy == identity.Legacy {
+				return fmt.Errorf("stop stale Kamui controller: %w", err)
+			}
+			if probeErr != nil && !controllerUnavailable(probeErr) {
+				return fmt.Errorf("verify stale controller shutdown: %w", probeErr)
+			}
+		}
+		current, waitErr := a.waitForController(ctx, false)
+		if waitErr == nil && identitiesMatch(current, a.identity) {
+			return nil
+		}
+		if waitErr != nil && !controllerUnavailable(waitErr) {
+			return waitErr
+		}
+	}
+
+	if err := a.starter.Start(ctx, a.layout); err != nil && !strings.Contains(err.Error(), "another Kamui controller") {
+		return fmt.Errorf("start Kamui controller: %w", err)
+	}
+	identity, err = a.waitForController(ctx, true)
+	if err != nil {
+		return err
+	}
+	if !identitiesMatch(identity, a.identity) {
+		return fmt.Errorf("Kamui controller takeover produced protocol %d build %q; want protocol %d build %q",
+			identity.Protocol, identity.Build, a.identity.Protocol, a.identity.Build)
+	}
+	return nil
+}
+
+func identitiesMatch(got, want controller.Identity) bool {
+	return !got.Legacy && got.Protocol == want.Protocol && got.Build == want.Build
+}
+
+func (a *Application) waitForController(ctx context.Context, ready bool) (controller.Identity, error) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()
+	var lastErr error
 	for {
-		result, err = call()
-		if err == nil {
-			return a.completeResult(destination, request.Operation, result)
+		identity, err := a.client.Identity(ctx)
+		if ready && err == nil {
+			return identity, nil
 		}
-		if !controllerUnavailable(err) {
-			return Result{}, err
+		if !ready && err != nil && controllerUnavailable(err) {
+			return controller.Identity{}, err
 		}
+		if !ready && err == nil && identitiesMatch(identity, a.identity) {
+			return identity, nil
+		}
+		lastErr = err
 		select {
 		case <-ctx.Done():
-			return Result{}, ctx.Err()
+			return controller.Identity{}, ctx.Err()
 		case <-deadline.C:
-			return Result{}, fmt.Errorf("Kamui controller did not become ready: %w", err)
+			state := "stop"
+			if ready {
+				state = "become ready"
+			}
+			return controller.Identity{}, fmt.Errorf("Kamui controller did not %s after upgrade: %w", state, lastErr)
 		case <-ticker.C:
 		}
 	}
+}
+
+func (a *Application) logControllerRestart(old controller.Identity) error {
+	if err := a.layout.Ensure(); err != nil {
+		return err
+	}
+	file, err := os.OpenFile(a.layout.ControlLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open controller log: %w", err)
+	}
+	defer file.Close()
+	_, err = fmt.Fprintf(file, "{\"event\":\"controller_upgrade_restart\",\"old_protocol\":%d,\"old_build\":%q,\"new_protocol\":%d,\"new_build\":%q}\n",
+		old.Protocol, old.Build, a.identity.Protocol, a.identity.Build)
+	return err
 }
 
 func (a *Application) completeResult(destination session.Destination, operation Operation, result session.Result) (Result, error) {

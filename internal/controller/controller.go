@@ -22,13 +22,113 @@ import (
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/state"
+	"github.com/narasaka/kamui/internal/version"
 )
 
 const maximumMessageSize = 1 << 20
 
+// ProtocolVersion changes when the controller wire contract is incompatible.
+const ProtocolVersion = 2
+
+// Identity is the authenticated protocol/build identity of one controller.
+type Identity struct {
+	Protocol int    `json:"protocol"`
+	Build    string `json:"build"`
+	PID      int    `json:"pid,omitempty"`
+	Legacy   bool   `json:"-"`
+}
+
 // Client sends lifecycle commands to a running controller.
 type Client struct {
 	Layout state.Layout
+}
+
+// Identity authenticates the resident controller and reports its protocol and
+// build before a lifecycle command is sent. A v0.0.4 response has no identity
+// payload and is reported as Legacy.
+func (c Client) Identity(ctx context.Context) (Identity, error) {
+	token, err := os.ReadFile(c.Layout.Token)
+	if err != nil {
+		return Identity{}, fmt.Errorf("read controller token: %w", err)
+	}
+	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", c.Layout.Socket)
+	if err != nil {
+		return Identity{}, fmt.Errorf("contact Kamui controller: %w", err)
+	}
+	defer connection.Close()
+	peerPID, _ := peerProcessID(connection)
+	request := wireRequest{Token: string(token), Operation: session.Status, Probe: true}
+	if err := json.NewEncoder(connection).Encode(request); err != nil {
+		return Identity{}, fmt.Errorf("send controller identity request: %w", err)
+	}
+	var response wireResponse
+	if err := json.NewDecoder(io.LimitReader(connection, maximumMessageSize)).Decode(&response); err != nil {
+		return Identity{}, fmt.Errorf("read controller identity response: %w", err)
+	}
+	if response.Error != "" {
+		return Identity{}, errors.New(response.Error)
+	}
+	if response.Identity == nil {
+		return Identity{Legacy: true, PID: peerPID}, nil
+	}
+	identity := *response.Identity
+	if identity.PID == 0 {
+		identity.PID = peerPID
+	}
+	return identity, nil
+}
+
+// Shutdown gracefully stops the exact authenticated controller identity that
+// the caller previously negotiated.
+func (c Client) Shutdown(ctx context.Context, expected Identity) error {
+	token, err := os.ReadFile(c.Layout.Token)
+	if err != nil {
+		return fmt.Errorf("read controller token: %w", err)
+	}
+	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", c.Layout.Socket)
+	if err != nil {
+		return fmt.Errorf("contact Kamui controller: %w", err)
+	}
+	defer connection.Close()
+	request := wireRequest{
+		Token: string(token), Shutdown: true,
+		ExpectedProtocol: expected.Protocol, ExpectedBuild: expected.Build,
+	}
+	if err := json.NewEncoder(connection).Encode(request); err != nil {
+		return fmt.Errorf("send controller shutdown request: %w", err)
+	}
+	var response wireResponse
+	if err := json.NewDecoder(io.LimitReader(connection, maximumMessageSize)).Decode(&response); err != nil {
+		return fmt.Errorf("read controller shutdown response: %w", err)
+	}
+	if response.Error != "" {
+		return errors.New(response.Error)
+	}
+	return nil
+}
+
+// ShutdownLegacy migrates a v0.0.4 controller, which predates the authenticated
+// shutdown request. It signals only the kernel-reported PID on a freshly
+// authenticated control connection; filesystem PID metadata is never trusted.
+func (c Client) ShutdownLegacy(ctx context.Context, expected Identity) error {
+	if !expected.Legacy || expected.PID <= 0 {
+		return fmt.Errorf("legacy controller has no verified peer PID")
+	}
+	current, err := c.Identity(ctx)
+	if err != nil {
+		return err
+	}
+	if !current.Legacy || current.PID != expected.PID {
+		return fmt.Errorf("controller identity changed before legacy shutdown")
+	}
+	process, err := os.FindProcess(current.PID)
+	if err != nil {
+		return fmt.Errorf("find verified legacy controller: %w", err)
+	}
+	if err := process.Signal(syscall.SIGTERM); err != nil {
+		return fmt.Errorf("terminate verified legacy controller: %w", err)
+	}
+	return nil
 }
 
 // Execute performs one command through the controller socket.
@@ -92,10 +192,22 @@ type Server struct {
 	closeError error
 	handlers   sync.WaitGroup
 	done       chan struct{}
+	stopped    chan struct{}
+	identity   Identity
 }
 
 // Start acquires the controller lock and begins accepting requests.
 func Start(ctx context.Context, layout state.Layout, manager *session.Manager) (*Server, error) {
+	return StartWithIdentity(ctx, layout, manager, Identity{
+		Protocol: ProtocolVersion,
+		Build:    version.BuildIdentity(),
+		PID:      os.Getpid(),
+	})
+}
+
+// StartWithIdentity starts a controller with an explicit identity. Production
+// uses Start; the explicit form makes upgrade negotiation testable.
+func StartWithIdentity(ctx context.Context, layout state.Layout, manager *session.Manager, identity Identity) (*Server, error) {
 	if err := layout.Ensure(); err != nil {
 		return nil, err
 	}
@@ -134,7 +246,7 @@ func Start(ctx context.Context, layout state.Layout, manager *session.Manager) (
 	serverContext, cancel := context.WithCancel(ctx)
 	server := &Server{
 		layout: layout, listener: listener, lock: lock, token: token,
-		manager: manager, ctx: serverContext, cancel: cancel, done: make(chan struct{}),
+		manager: manager, ctx: serverContext, cancel: cancel, done: make(chan struct{}), stopped: make(chan struct{}), identity: identity,
 	}
 	go server.accept()
 	go func() {
@@ -168,6 +280,19 @@ func (s *Server) handle(connection net.Conn) {
 	}
 	if subtle.ConstantTimeCompare([]byte(request.Token), []byte(s.token)) != 1 {
 		_ = json.NewEncoder(connection).Encode(wireResponse{Error: "controller authentication failed"})
+		return
+	}
+	if request.Probe {
+		_ = json.NewEncoder(connection).Encode(wireResponse{Identity: &s.identity})
+		return
+	}
+	if request.Shutdown {
+		if request.ExpectedProtocol != s.identity.Protocol || request.ExpectedBuild != s.identity.Build {
+			_ = json.NewEncoder(connection).Encode(wireResponse{Error: "controller identity changed before shutdown"})
+			return
+		}
+		_ = json.NewEncoder(connection).Encode(wireResponse{})
+		go func() { _ = s.Close() }()
 		return
 	}
 	var destination session.Destination
@@ -217,12 +342,16 @@ func (s *Server) Close() error {
 			s.closeError = errors.Join(s.closeError, err)
 		}
 		s.closeError = errors.Join(s.closeError, syscall.Flock(int(s.lock.Fd()), syscall.LOCK_UN), s.lock.Close())
+		close(s.stopped)
 	})
 	if errors.Is(s.closeError, net.ErrClosed) {
 		return nil
 	}
 	return s.closeError
 }
+
+// Done closes after the controller listener has stopped.
+func (s *Server) Done() <-chan struct{} { return s.stopped }
 
 func writeToken(path string) (string, error) {
 	bytes := make([]byte, 32)
@@ -265,6 +394,10 @@ type wireRequest struct {
 	StopBrowserOnStop bool               `json:"stopBrowserOnStop,omitempty"`
 	LoopbackMode      proxy.LoopbackMode `json:"loopbackMode,omitempty"`
 	Unattended        bool               `json:"unattended,omitempty"`
+	Probe             bool               `json:"probe,omitempty"`
+	Shutdown          bool               `json:"shutdown,omitempty"`
+	ExpectedProtocol  int                `json:"expectedProtocol,omitempty"`
+	ExpectedBuild     string             `json:"expectedBuild,omitempty"`
 }
 
 type wireStatus struct {
@@ -282,8 +415,9 @@ type wireResult struct {
 }
 
 type wireResponse struct {
-	Result wireResult `json:"result"`
-	Error  string     `json:"error,omitempty"`
+	Result   wireResult `json:"result"`
+	Identity *Identity  `json:"identity,omitempty"`
+	Error    string     `json:"error,omitempty"`
 }
 
 func makeWireResult(result session.Result) wireResult {

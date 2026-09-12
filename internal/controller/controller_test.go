@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -73,6 +74,78 @@ func TestTenConcurrentClientsCreateOneHostSession(t *testing.T) {
 	}
 	if _, err := client.Execute(context.Background(), session.Command{Operation: session.Stop, Destination: destination}); err != nil {
 		t.Fatalf("stop through controller: %v", err)
+	}
+}
+
+func TestClientNegotiatesAuthenticatedControllerIdentity(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-identity-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManager(ssh.Transport{Launcher: &controllerLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	identity := controller.Identity{Protocol: 2, Build: "test-build"}
+	server, err := controller.StartWithIdentity(ctx, layout, manager, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cancel(); _ = server.Close() })
+
+	got, err := (controller.Client{Layout: layout}).Identity(context.Background())
+	if err != nil {
+		t.Fatalf("Identity returned error: %v", err)
+	}
+	if got.Protocol != identity.Protocol || got.Build != identity.Build || got.Legacy {
+		t.Fatalf("identity = %#v, want protocol %d build %q and non-legacy", got, identity.Protocol, identity.Build)
+	}
+}
+
+func TestAuthenticatedShutdownStopsTheNegotiatedController(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-shutdown-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManager(ssh.Transport{Launcher: &controllerLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	identity := controller.Identity{Protocol: 2, Build: "old-build"}
+	server, err := controller.StartWithIdentity(context.Background(), layout, manager, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (controller.Client{Layout: layout}).Shutdown(context.Background(), identity); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+	select {
+	case <-server.Done():
+	case <-time.After(time.Second):
+		t.Fatal("controller did not stop after authenticated shutdown")
+	}
+	replacement, err := controller.StartWithIdentity(context.Background(), layout, manager, controller.Identity{Protocol: 2, Build: "new-build"})
+	if err != nil {
+		t.Fatalf("controller lock was not released: %v", err)
+	}
+	t.Cleanup(func() { _ = replacement.Close() })
+}
+
+func TestLegacyShutdownRejectsUnverifiedProcessMetadata(t *testing.T) {
+	t.Parallel()
+
+	layout := state.NewLayout(t.TempDir())
+	err := (controller.Client{Layout: layout}).ShutdownLegacy(context.Background(), controller.Identity{
+		Legacy: false, PID: os.Getpid(),
+	})
+	if err == nil || !strings.Contains(err.Error(), "verified peer PID") {
+		t.Fatalf("ShutdownLegacy error = %v, want rejection before signaling process", err)
 	}
 }
 

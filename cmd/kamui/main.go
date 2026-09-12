@@ -76,6 +76,9 @@ func runController(arguments []string) error {
 	if err != nil {
 		return err
 	}
-	<-ctx.Done()
+	select {
+	case <-ctx.Done():
+	case <-server.Done():
+	}
 	return server.Close()
 }

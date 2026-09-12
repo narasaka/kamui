@@ -3,9 +3,13 @@ package app_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 	"github.com/narasaka/kamui/internal/ssh"
 	"github.com/narasaka/kamui/internal/state"
 	"github.com/narasaka/kamui/internal/testsupport"
+	"github.com/narasaka/kamui/internal/version"
 )
 
 func TestPrintSSHConfigReturnsSnippetWithoutStartingController(t *testing.T) {
@@ -153,6 +158,217 @@ func TestApplicationStartsMissingControllerAndRetriesEnsure(t *testing.T) {
 		cancel()
 		starter.close()
 	})
+}
+
+func TestApplicationRestartsStaleControllerAndRetriesEnsure(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-app-upgrade-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	launcher := &testsupport.SSHLauncher{}
+	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	stale, err := controller.StartWithIdentity(ctx, layout, manager, controller.Identity{
+		Protocol: controller.ProtocolVersion, Build: "older-installed-build",
+	})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	starter := &inProcessStarter{ctx: ctx, manager: manager}
+	application := app.New(layout, starter)
+
+	result, err := application.Execute(context.Background(), app.Request{Operation: app.Ensure, Destination: "reyna"})
+	if err != nil {
+		cancel()
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	if result.Session.State != session.SessionConnected {
+		t.Fatalf("session state = %v, want connected", result.Session.State)
+	}
+	if starter.count() != 1 {
+		t.Fatalf("replacement controller starts = %d, want 1", starter.count())
+	}
+	identity, err := (controller.Client{Layout: layout}).Identity(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if identity.Build != version.BuildIdentity() {
+		t.Fatalf("replacement build = %q, want %q", identity.Build, version.BuildIdentity())
+	}
+	select {
+	case <-stale.Done():
+	default:
+		t.Fatal("stale controller is still running")
+	}
+	t.Cleanup(func() { cancel(); starter.close() })
+}
+
+func TestApplicationDoesNotRestartCurrentController(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-app-current-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	starter := &inProcessStarter{ctx: context.Background(), manager: manager}
+
+	result, err := app.New(layout, starter).Execute(context.Background(), app.Request{Operation: app.Ensure, Destination: "reyna"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Session.State != session.SessionConnected || starter.count() != 0 {
+		t.Fatalf("state=%v replacement starts=%d, want connected without restart", result.Session.State, starter.count())
+	}
+}
+
+func TestConcurrentUpgradeDetectionStartsOneReplacementController(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-app-concurrent-upgrade-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	stale, err := controller.StartWithIdentity(ctx, layout, manager, controller.Identity{
+		Protocol: controller.ProtocolVersion, Build: "older-installed-build",
+	})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	starter := &inProcessStarter{ctx: ctx, manager: manager}
+
+	const callers = 8
+	errors := make(chan error, callers)
+	var wait sync.WaitGroup
+	for range callers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			_, err := app.New(layout, starter).Execute(context.Background(), app.Request{Operation: app.Ensure, Destination: "reyna"})
+			errors <- err
+		}()
+	}
+	wait.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Errorf("concurrent command: %v", err)
+		}
+	}
+	if starter.count() != 1 {
+		t.Fatalf("replacement controller starts = %d, want 1", starter.count())
+	}
+	t.Cleanup(func() { cancel(); _ = stale.Close(); starter.close() })
+}
+
+func TestApplicationMigratesV004ControllerProtocol(t *testing.T) {
+	root, err := os.MkdirTemp("/tmp", "kamui-app-v004-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	command := exec.Command(os.Args[0], "-test.run=TestV004ControllerHelperProcess", "--", root)
+	command.Env = append(os.Environ(), "KAMUI_V004_HELPER=1")
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	waited := make(chan error, 1)
+	go func() { waited <- command.Wait() }()
+	t.Cleanup(func() {
+		if command.Process != nil {
+			_ = command.Process.Kill()
+		}
+		select {
+		case <-waited:
+		case <-time.After(time.Second):
+		}
+	})
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		identity, probeErr := (controller.Client{Layout: layout}).Identity(context.Background())
+		if probeErr == nil && identity.Legacy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("v0.0.4 helper did not become ready: identity=%#v error=%v", identity, probeErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	starter := &inProcessStarter{ctx: ctx, manager: manager}
+	result, err := app.New(layout, starter).Execute(context.Background(), app.Request{Operation: app.Ensure, Destination: "reyna"})
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	if result.Session.State != session.SessionConnected || starter.count() != 1 {
+		t.Fatalf("state=%v replacement starts=%d, want successful migrated command", result.Session.State, starter.count())
+	}
+	t.Cleanup(func() { cancel(); starter.close() })
+}
+
+func TestV004ControllerHelperProcess(t *testing.T) {
+	if os.Getenv("KAMUI_V004_HELPER") != "1" {
+		return
+	}
+	root := os.Args[len(os.Args)-1]
+	layout := state.NewLayout(root)
+	if err := layout.Ensure(); err != nil {
+		os.Exit(2)
+	}
+	lock, err := os.OpenFile(layout.Lock, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil || syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
+		os.Exit(2)
+	}
+	defer lock.Close()
+	_ = os.Remove(layout.Socket)
+	listener, err := net.Listen("unix", layout.Socket)
+	if err != nil {
+		os.Exit(2)
+	}
+	defer listener.Close()
+	const token = "v004-authenticated-token"
+	if err := os.WriteFile(layout.Token, []byte(token), 0o600); err != nil {
+		os.Exit(2)
+	}
+	for {
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		var request struct {
+			Token string `json:"token"`
+		}
+		if json.NewDecoder(connection).Decode(&request) == nil && request.Token == token {
+			_, _ = connection.Write([]byte("{\"result\":{\"sessions\":[]}}\n"))
+		}
+		_ = connection.Close()
+	}
 }
 
 func TestSSHHookReturnsAfterControllerAcceptsSlowActivation(t *testing.T) {
