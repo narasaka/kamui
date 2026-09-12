@@ -4,8 +4,10 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -140,12 +142,23 @@ func TestAuthenticatedShutdownStopsTheNegotiatedController(t *testing.T) {
 func TestLegacyShutdownRejectsUnverifiedProcessMetadata(t *testing.T) {
 	t.Parallel()
 
+	unrelated := exec.Command("sleep", "30")
+	if err := unrelated.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = unrelated.Process.Kill()
+		_ = unrelated.Wait()
+	})
 	layout := state.NewLayout(t.TempDir())
 	err := (controller.Client{Layout: layout}).ShutdownLegacy(context.Background(), controller.Identity{
-		Legacy: false, PID: os.Getpid(),
+		Legacy: true, PID: unrelated.Process.Pid,
 	})
-	if err == nil || !strings.Contains(err.Error(), "verified peer PID") {
-		t.Fatalf("ShutdownLegacy error = %v, want rejection before signaling process", err)
+	if err == nil || !strings.Contains(err.Error(), "controller token") {
+		t.Fatalf("ShutdownLegacy error = %v, want authenticated-channel rejection", err)
+	}
+	if err := unrelated.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("unrelated process was affected by stale metadata: %v", err)
 	}
 }
 
