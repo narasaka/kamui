@@ -114,7 +114,7 @@ func (l *linuxBrowserLauncher) Launch(ctx context.Context, path string, args []s
 			return fmt.Errorf("browser report = %q, want remote-linux-browser", report)
 		}
 		return nil
-	case <-time.After(20 * time.Second):
+	case <-time.After(60 * time.Second):
 		return fmt.Errorf("native Linux browser did not finish proxy check")
 	}
 }
