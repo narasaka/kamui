@@ -23,7 +23,7 @@ func TestHTTPProxyRoutesLoopbackRemotelyAndOtherHostsDirectly(t *testing.T) {
 	t.Parallel()
 
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "%s %s", r.Host, r.URL.Path)
+		_, _ = fmt.Fprintf(w, "%s %s", r.Host, r.URL.Path)
 	}))
 	t.Cleanup(backend.Close)
 	backendAddress := strings.TrimPrefix(backend.URL, "http://")
@@ -66,7 +66,7 @@ func TestHTTPProxyRoutesLoopbackRemotelyAndOtherHostsDirectly(t *testing.T) {
 			t.Fatalf("GET %s: %v", target, err)
 		}
 		body, err := io.ReadAll(response.Body)
-		response.Body.Close()
+		_ = response.Body.Close()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -120,7 +120,7 @@ func TestHTTPProxyLocalFirstUsesAvailableMacLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET local loopback through proxy: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -163,7 +163,7 @@ func TestHTTPProxyLocalFirstFallsBackWhenMacLoopbackRefusesConnection(t *testing
 	if err != nil {
 		t.Fatalf("GET remote fallback through proxy: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -210,7 +210,7 @@ func TestHTTPProxyLocalFirstReachesIPv6OnlyMacLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET IPv6-only Mac loopback: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestHTTPProxyLocalFirstDoesNotFallBackAfterOtherLocalErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -290,7 +290,7 @@ func TestHTTPProxyReachesIPv6OnlyRemoteLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET IPv6-only remote loopback: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -339,7 +339,7 @@ func TestProxyCarriesPlainWebSocketUpgrade(t *testing.T) {
 		if err != nil {
 			return
 		}
-		defer client.Close()
+		defer func() { _ = client.Close() }()
 		_, _ = io.WriteString(client, "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
 		message := make([]byte, 4)
 		if _, err := io.ReadFull(client, message); err == nil {
@@ -364,7 +364,7 @@ func TestProxyCarriesPlainWebSocketUpgrade(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	_, _ = io.WriteString(connection, "GET ws://localhost:3004/socket HTTP/1.1\r\nHost: localhost:3004\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
 	reader := bufio.NewReader(connection)
 	request, _ := http.NewRequest(http.MethodGet, "http://localhost:3004/socket", nil)
@@ -419,7 +419,7 @@ func TestProxyTunnelsHTTPSWithoutTerminatingTLS(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTTPS through proxy: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -465,7 +465,7 @@ func TestProxyLocalFirstTunnelsHTTPSToAvailableMacLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HTTPS to Mac loopback through proxy: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -511,7 +511,7 @@ func TestProxyTunnelsHTTPSToIPv6OnlyRemoteLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET HTTPS through IPv6-only remote loopback: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)

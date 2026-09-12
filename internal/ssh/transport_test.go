@@ -244,7 +244,7 @@ func TestConnectionDialsTargetsThroughSOCKS5(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DialContext returned error: %v", err)
 	}
-	defer stream.Close()
+	defer func() { _ = stream.Close() }()
 	if _, err := stream.Write([]byte("ping")); err != nil {
 		t.Fatal(err)
 	}
@@ -378,7 +378,7 @@ func (l *socksLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
 }
 
 func (l *socksLauncher) handle(connection net.Conn) {
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	greeting := make([]byte, 3)
 	if _, err := io.ReadFull(connection, greeting); err != nil {
 		return

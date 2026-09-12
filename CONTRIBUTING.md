@@ -1,8 +1,9 @@
 # Contributing
 
-Run `gofmt`, `go vet ./...`, and `go test -race ./...` before submitting a
-change. Tests describe observable behavior through package interfaces and mock
-only operating-system or external-process seams.
+Run `make check` before submitting a change. It checks formatting, installs and
+runs the repository-pinned golangci-lint release, runs `go vet`, and runs the
+test suite with the race detector. Tests describe observable behavior through
+package interfaces and mock only operating-system or external-process seams.
 
 Normal commit subjects use Scoped Commits:
 

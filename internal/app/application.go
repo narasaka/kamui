@@ -222,7 +222,7 @@ func (a *Application) ensureCompatibleController(ctx context.Context) error {
 		return err
 	}
 	if !identitiesMatch(identity, a.identity) {
-		return fmt.Errorf("Kamui controller takeover produced protocol %d build %q; want protocol %d build %q",
+		return fmt.Errorf("controller takeover produced protocol %d build %q; want protocol %d build %q",
 			identity.Protocol, identity.Build, a.identity.Protocol, a.identity.Build)
 	}
 	return nil
@@ -259,9 +259,9 @@ func (a *Application) waitForController(ctx context.Context, ready bool) (contro
 				state = "become ready"
 			}
 			if lastErr != nil {
-				return controller.Identity{}, fmt.Errorf("Kamui controller did not %s after upgrade: %w", state, lastErr)
+				return controller.Identity{}, fmt.Errorf("controller for Kamui did not %s after upgrade: %w", state, lastErr)
 			}
-			return controller.Identity{}, fmt.Errorf("Kamui controller did not %s after upgrade within %s", state, controllerTransitionTimeout)
+			return controller.Identity{}, fmt.Errorf("controller for Kamui did not %s after upgrade within %s", state, controllerTransitionTimeout)
 		case <-ticker.C:
 		}
 	}
@@ -275,7 +275,7 @@ func (a *Application) logControllerRestart(old controller.Identity) error {
 	if err != nil {
 		return fmt.Errorf("open controller log: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	_, err = fmt.Fprintf(file, "{\"event\":\"controller_upgrade_restart\",\"old_protocol\":%d,\"old_build\":%q,\"new_protocol\":%d,\"new_build\":%q}\n",
 		old.Protocol, old.Build, a.identity.Protocol, a.identity.Build)
 	return err

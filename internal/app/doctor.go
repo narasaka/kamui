@@ -51,8 +51,13 @@ func (a *Application) runDoctor(ctx context.Context, destination session.Destina
 	if stateErr == nil {
 		probe, err := os.CreateTemp(a.layout.State, "doctor-*")
 		if err == nil {
-			probe.Close()
-			err = os.Remove(probe.Name())
+			closeErr := probe.Close()
+			removeErr := os.Remove(probe.Name())
+			if closeErr != nil {
+				err = closeErr
+			} else if removeErr != nil {
+				err = removeErr
+			}
 		}
 		stateErr = err
 	}

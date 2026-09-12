@@ -71,7 +71,7 @@ func (l Layout) TakeFirstRunWarning() (bool, error) {
 		return false, fmt.Errorf("record first-run warning: %w", err)
 	}
 	if _, err := file.WriteString("Remote content receives localhost origin treatment in Kamui profiles.\n"); err != nil {
-		file.Close()
+		_ = file.Close()
 		return false, err
 	}
 	if err := file.Close(); err != nil {
@@ -161,13 +161,13 @@ func writeUserFile(directory, pattern, target, contents string) error {
 		return err
 	}
 	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	defer func() { _ = os.Remove(temporaryPath) }()
 	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return err
 	}
 	if _, err := temporary.WriteString(contents); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return err
 	}
 	if err := temporary.Close(); err != nil {

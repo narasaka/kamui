@@ -52,12 +52,12 @@ func TestRemoteListenerAppearsAndIsReachableOnIPv4AndIPv6(t *testing.T) {
 		_, _ = io.WriteString(connection, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
 		response, err := http.ReadResponse(bufio.NewReader(connection), nil)
 		if err != nil {
-			connection.Close()
+			_ = connection.Close()
 			t.Fatalf("read HTTP through %s: %v", host, err)
 		}
 		body, _ := io.ReadAll(response.Body)
-		response.Body.Close()
-		connection.Close()
+		_ = response.Body.Close()
+		_ = connection.Close()
 		if string(body) != "mirrored HTTP" {
 			t.Fatalf("body through %s = %q", host, body)
 		}
@@ -224,7 +224,7 @@ func TestListenerDisappearsWhileForwardDialIsBlocked(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	select {
 	case <-dialStarted:
 	case <-time.After(time.Second):

@@ -24,7 +24,7 @@ func TestNetworkingSessionCarriesUnannouncedPortsAndLeavesOtherHostsDirect(t *te
 	for index := range servers {
 		index := index
 		servers[index] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			fmt.Fprintf(w, "remote service %d", index)
+			_, _ = fmt.Fprintf(w, "remote service %d", index)
 		}))
 		t.Cleanup(servers[index].Close)
 	}
@@ -46,7 +46,7 @@ func TestNetworkingSessionCarriesUnannouncedPortsAndLeavesOtherHostsDirect(t *te
 			t.Fatalf("remote service %d: %v", index, err)
 		}
 		body, _ := io.ReadAll(response.Body)
-		response.Body.Close()
+		_ = response.Body.Close()
 		if got, want := string(body), fmt.Sprintf("remote service %d", index); got != want {
 			t.Fatalf("remote service %d body = %q, want %q", index, got, want)
 		}
@@ -57,7 +57,7 @@ func TestNetworkingSessionCarriesUnannouncedPortsAndLeavesOtherHostsDirect(t *te
 	if err != nil {
 		t.Fatalf("direct request: %v", err)
 	}
-	response.Body.Close()
+	_ = response.Body.Close()
 	if launcher.Starts() != 1 {
 		t.Fatalf("OpenSSH starts = %d, want one transport for every port", launcher.Starts())
 	}
@@ -82,7 +82,7 @@ func TestNetworkingSessionReportsRemoteRefusalAndCleansUp(t *testing.T) {
 		t.Fatalf("proxy refusal response: %v", err)
 	}
 	body, _ := io.ReadAll(response.Body)
-	response.Body.Close()
+	_ = response.Body.Close()
 	if response.StatusCode != http.StatusBadGateway || !strings.Contains(strings.ToLower(string(body)), "connection refused") {
 		t.Fatalf("refusal status=%d body=%q", response.StatusCode, body)
 	}
@@ -94,7 +94,7 @@ func TestNetworkingSessionReportsRemoteRefusalAndCleansUp(t *testing.T) {
 	}
 	connection, err := net.DialTimeout("tcp", ensured.Session.Proxy.String(), 100*time.Millisecond)
 	if err == nil {
-		connection.Close()
+		_ = connection.Close()
 		t.Fatal("proxy still accepted connections after stop")
 	}
 }

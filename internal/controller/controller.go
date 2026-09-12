@@ -56,7 +56,7 @@ func (c Client) Identity(ctx context.Context) (Identity, error) {
 	if err != nil {
 		return Identity{}, fmt.Errorf("contact Kamui controller: %w", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	peerPID, _ := peerProcessID(connection)
 	request := wireRequest{Token: string(token), Operation: session.Status, Probe: true}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
@@ -90,7 +90,7 @@ func (c Client) Shutdown(ctx context.Context, expected Identity) error {
 	if err != nil {
 		return fmt.Errorf("contact Kamui controller: %w", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	request := wireRequest{
 		Token: string(token), Shutdown: true,
 		ExpectedProtocol: expected.Protocol, ExpectedBuild: expected.Build,
@@ -153,7 +153,7 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 	if err != nil {
 		return session.Result{}, fmt.Errorf("contact Kamui controller: %w", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	request := wireRequest{
 		Token:             string(token),
 		Operation:         command.Operation,
@@ -218,31 +218,31 @@ func StartWithIdentity(ctx context.Context, layout state.Layout, manager *sessio
 		return nil, fmt.Errorf("open controller lock: %w", err)
 	}
 	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		lock.Close()
+		_ = lock.Close()
 		return nil, fmt.Errorf("another Kamui controller owns %s: %w", layout.Lock, err)
 	}
 	if err := os.Remove(layout.Socket); err != nil && !os.IsNotExist(err) {
 		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-		lock.Close()
+		_ = lock.Close()
 		return nil, fmt.Errorf("remove stale controller socket: %w", err)
 	}
 	listener, err := net.Listen("unix", layout.Socket)
 	if err != nil {
 		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-		lock.Close()
+		_ = lock.Close()
 		return nil, fmt.Errorf("listen on controller socket: %w", err)
 	}
 	if err := os.Chmod(layout.Socket, 0o600); err != nil {
-		listener.Close()
+		_ = listener.Close()
 		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-		lock.Close()
+		_ = lock.Close()
 		return nil, fmt.Errorf("protect controller socket: %w", err)
 	}
 	token, err := writeToken(layout.Token)
 	if err != nil {
-		listener.Close()
+		_ = listener.Close()
 		_ = syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
-		lock.Close()
+		_ = lock.Close()
 		return nil, err
 	}
 	serverContext, cancel := context.WithCancel(ctx)
@@ -268,7 +268,7 @@ func (s *Server) accept() {
 		s.handlers.Add(1)
 		go func() {
 			defer s.handlers.Done()
-			defer connection.Close()
+			defer func() { _ = connection.Close() }()
 			s.handle(connection)
 		}()
 	}
@@ -368,13 +368,13 @@ func writeToken(path string) (string, error) {
 		return "", fmt.Errorf("create controller token: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	defer func() { _ = os.Remove(temporaryPath) }()
 	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return "", err
 	}
 	if _, err := temporary.WriteString(token); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return "", err
 	}
 	if err := temporary.Close(); err != nil {

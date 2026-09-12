@@ -54,9 +54,10 @@ type ConnectError struct {
 
 func (e *ConnectError) Error() string {
 	layer := "connection"
-	if e.Kind == AuthenticationFailure {
+	switch e.Kind {
+	case AuthenticationFailure:
 		layer = "authentication"
-	} else if e.Kind == ConfigurationFailure {
+	case ConfigurationFailure:
 		layer = "configuration"
 	}
 	return fmt.Sprintf("SSH %s failed for %s: %v", layer, e.Destination, e.Err)
@@ -139,7 +140,7 @@ func (t Transport) connect(ctx context.Context, destination string, unattended b
 	t.SSHPath = path
 	if !unattended && t.Inspector != nil {
 		if enabled, err := t.Inspector.AgentForwarding(ctx, path, destination); err == nil && enabled {
-			fmt.Fprintf(io.MultiWriter(defaultWriter(t.Stderr), defaultWriter(t.BackgroundStderr)), "WARNING: SSH agent forwarding is enabled for %s; the remote host can access the forwarded agent.\n", destination)
+			_, _ = fmt.Fprintf(io.MultiWriter(defaultWriter(t.Stderr), defaultWriter(t.BackgroundStderr)), "WARNING: SSH agent forwarding is enabled for %s; the remote host can access the forwarded agent.\n", destination)
 		}
 	}
 	var lastErr error
