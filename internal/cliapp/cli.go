@@ -9,6 +9,7 @@ import (
 	kamuiapp "github.com/narasaka/kamui/internal/app"
 	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/session"
+	"github.com/narasaka/kamui/internal/version"
 	cli "github.com/urfave/cli/v3"
 )
 
@@ -28,6 +29,7 @@ func NewCommand(streams Streams) *cli.Command {
 func NewCommandWithApplication(application *kamuiapp.Application, streams Streams) *cli.Command {
 	command := &cli.Command{
 		Name:      "kamui",
+		Version:   version.Version,
 		Usage:     "use a remote SSH host's loopback services in a development browser",
 		ArgsUsage: "SSH_DESTINATION",
 		Reader:    streams.In,

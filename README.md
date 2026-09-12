@@ -12,6 +12,9 @@ host.
 
 Kamui is under development and is not yet ready for general installation.
 
+Installation, upgrade, uninstall, and release-build instructions are in
+[the installation guide](docs/install.md).
+
 ## Command contract
 
 The primary command accepts exactly one OpenSSH destination:

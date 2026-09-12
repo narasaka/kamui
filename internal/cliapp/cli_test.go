@@ -41,3 +41,16 @@ func TestPlannedCommandsReturnExplicitNotImplementedErrors(t *testing.T) {
 		})
 	}
 }
+
+func TestVersionFlagReportsBuildVersion(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	command := cliapp.NewCommand(cliapp.Streams{Out: &stdout, ErrOut: &stdout})
+	if err := command.Run(context.Background(), []string{"kamui", "--version"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := stdout.String(), "kamui version dev\n"; got != want {
+		t.Fatalf("version output = %q, want %q", got, want)
+	}
+}
