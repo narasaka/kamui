@@ -82,6 +82,11 @@ kamui ssh-hook SSH_DESTINATION
 kamui print-ssh-config SSH_ALIAS
 ```
 
+Run `kamui` without arguments to see the command list. `kamui -v` and
+`kamui --version` print only the build version. Running `kamui stop` without a
+destination lists the known sessions and the commands for stopping one or all
+of them; it exits unsuccessfully because no session was stopped.
+
 See [the CLI contract](docs/cli.md) and
 [configuration reference](docs/configuration.md) for details.
 

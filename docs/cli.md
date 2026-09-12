@@ -9,6 +9,10 @@ errors and do not reinterpret an SSH destination as OpenSSH options.
 not accept application ports or a `-url` flag. Repeating the command reuses the
 same exact-destination session.
 
+Running `kamui` without arguments prints command help and exits successfully.
+`kamui -v` and `kamui --version` print only the build version, such as
+`v0.0.1` for a release or `dev` for a development build.
+
 `BROWSER` may be a stable supported browser identifier or an absolute browser
 executable path. An ambiguous path requires an explicit browser family.
 
@@ -16,6 +20,8 @@ executable path. An ambiguous path requires an explicit browser family.
 
 - `status [SSH_DESTINATION]` reports all sessions or one exact destination.
 - `stop SSH_DESTINATION` stops one session; `stop --all` stops all sessions.
+  With no destination, `stop` lists the known sessions that can be stopped and
+  exits unsuccessfully because no stop occurred. It reports when none exist.
 - `open SSH_DESTINATION [URL ...]` opens URLs in the matching profile.
 - `doctor SSH_DESTINATION` checks local prerequisites and connectivity.
 - `browsers` lists detected supported installations.

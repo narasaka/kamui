@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	kamuiapp "github.com/narasaka/kamui/internal/app"
 	"github.com/narasaka/kamui/internal/browser"
@@ -12,6 +13,16 @@ import (
 	"github.com/narasaka/kamui/internal/version"
 	cli "github.com/urfave/cli/v3"
 )
+
+func init() {
+	cli.VersionPrinter = func(cmd *cli.Command) {
+		value := cmd.Version
+		if value != "dev" && !strings.HasPrefix(value, "v") {
+			value = "v" + value
+		}
+		_, _ = fmt.Fprintln(cmd.Root().Writer, value)
+	}
+}
 
 // Streams are the standard streams visible to a command invocation.
 type Streams struct {
@@ -40,6 +51,9 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			&cli.StringFlag{Name: "browser-family"},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if cmd.NArg() == 0 {
+				return cli.ShowRootCommandHelp(cmd)
+			}
 			if err := exactlyOneDestination(cmd); err != nil {
 				return err
 			}
@@ -69,6 +83,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	command.Commands = []*cli.Command{
 		{
 			Name:      "status",
+			Usage:     "show session status",
 			ArgsUsage: "[SSH_DESTINATION]",
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "verbose"}},
 			Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -90,6 +105,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 		},
 		{
 			Name:      "stop",
+			Usage:     "stop one or all sessions",
 			ArgsUsage: "SSH_DESTINATION",
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "all"}},
 			Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -103,6 +119,25 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 					_, err := application.Execute(ctx, kamuiapp.Request{Operation: kamuiapp.Stop, All: true})
 					return err
 				}
+				if cmd.NArg() == 0 {
+					if application == nil {
+						return notImplemented("status")
+					}
+					result, err := application.Execute(ctx, kamuiapp.Request{Operation: kamuiapp.Status})
+					if err != nil {
+						return fmt.Errorf("list sessions available to stop: %w", err)
+					}
+					if len(result.Sessions) == 0 {
+						return fmt.Errorf("No sessions to stop.")
+					}
+					var message strings.Builder
+					message.WriteString("Choose a session to stop:\n")
+					for _, status := range result.Sessions {
+						fmt.Fprintf(&message, "\n  %s  %s", status.Destination, sessionState(status.State))
+					}
+					message.WriteString("\n\nRun `kamui stop SSH_DESTINATION` or `kamui stop --all`.")
+					return fmt.Errorf("%s", message.String())
+				}
 				if err := exactlyOneDestination(cmd); err != nil {
 					return err
 				}
@@ -115,6 +150,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 		},
 		{
 			Name:      "open",
+			Usage:     "open URLs in a session browser",
 			ArgsUsage: "SSH_DESTINATION [URL ...]",
 			Action: func(ctx context.Context, cmd *cli.Command) error {
 				if cmd.NArg() < 1 {
@@ -134,6 +170,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 		},
 		{
 			Name:      "doctor",
+			Usage:     "diagnose SSH connectivity",
 			ArgsUsage: "SSH_DESTINATION",
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "json"}},
 			Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -153,7 +190,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				return err
 			},
 		},
-		{Name: "browsers", Action: func(ctx context.Context, cmd *cli.Command) error {
+		{Name: "browsers", Usage: "list detected supported browsers", Action: func(ctx context.Context, cmd *cli.Command) error {
 			if err := noArguments(cmd); err != nil {
 				return err
 			}
@@ -173,6 +210,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 		}},
 		{
 			Name:      "ssh-hook",
+			Usage:     "activate a session from OpenSSH",
 			ArgsUsage: "SSH_DESTINATION",
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "verbose"}},
 			Action: func(ctx context.Context, cmd *cli.Command) error {
@@ -193,6 +231,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 		},
 		{
 			Name:      "print-ssh-config",
+			Usage:     "print an OpenSSH LocalCommand snippet",
 			ArgsUsage: "SSH_ALIAS",
 			Action: func(ctx context.Context, cmd *cli.Command) error {
 				if err := exactlyOneDestination(cmd); err != nil {
