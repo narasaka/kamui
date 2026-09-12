@@ -33,3 +33,23 @@ func TestLayoutCreatesUserOnlyPathsAndContainsDestinationState(t *testing.T) {
 		t.Fatalf("session state path %q escaped or exposed destination", path)
 	}
 }
+
+func TestLayoutRemembersSuccessfulBrowserPerExactDestination(t *testing.T) {
+	t.Parallel()
+
+	layout := state.NewLayout(t.TempDir())
+	if err := layout.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	destination, _ := session.ParseDestination("reyna")
+	if err := layout.RememberBrowser(destination, "firefox"); err != nil {
+		t.Fatal(err)
+	}
+	got, err := layout.PreviousBrowser(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "firefox" {
+		t.Fatalf("PreviousBrowser = %q, want firefox", got)
+	}
+}

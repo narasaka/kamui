@@ -84,7 +84,7 @@ func (c *Catalog) selectAbsolute(ctx context.Context, selection Selection) (Sele
 		return Selected{}, fmt.Errorf("browser family is ambiguous for %q; use --browser-family", selection.Explicit)
 	}
 	for _, adapter := range c.adapters {
-		if adapter.ID() == family || strings.HasPrefix(adapter.ID(), family) {
+		if adapter.ID() == family || adapterFamily(adapter.ID()) == family {
 			return Selected{
 				Adapter:      adapter,
 				Installation: Installation{ID: adapter.ID(), Executable: selection.Explicit},
@@ -92,6 +92,17 @@ func (c *Catalog) selectAbsolute(ctx context.Context, selection Selection) (Sele
 		}
 	}
 	return Selected{}, fmt.Errorf("browser family %q is not supported", family)
+}
+
+func adapterFamily(id string) string {
+	switch id {
+	case "chrome", "chromium", "arc", "brave", "edge":
+		return "chromium"
+	case "firefox", "firefox-developer-edition", "zen", "librewolf", "floorp":
+		return "gecko"
+	default:
+		return ""
+	}
 }
 
 func familyFromExecutable(path string) string {

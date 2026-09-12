@@ -121,6 +121,11 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		if selection.Explicit == "" {
 			selection.Host = effective.Browser
 		}
+		previous, err := a.layout.PreviousBrowser(destination)
+		if err != nil {
+			return Result{}, fmt.Errorf("read previous browser selection: %w", err)
+		}
+		selection.Previous = previous
 		if request.Operation == SSHHook && !effective.OpenBrowserOnSSH {
 			skipBrowser = true
 		}
@@ -139,6 +144,11 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	}
 	result, err := call()
 	if err == nil {
+		if request.Operation == Ensure && result.Session.Browser != "" {
+			if err := a.layout.RememberBrowser(destination, result.Session.Browser); err != nil {
+				return Result{}, fmt.Errorf("remember browser selection: %w", err)
+			}
+		}
 		return Result{Result: result}, nil
 	}
 	if !controllerUnavailable(err) {
@@ -155,6 +165,11 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	for {
 		result, err = call()
 		if err == nil {
+			if request.Operation == Ensure && result.Session.Browser != "" {
+				if err := a.layout.RememberBrowser(destination, result.Session.Browser); err != nil {
+					return Result{}, fmt.Errorf("remember browser selection: %w", err)
+				}
+			}
 			return Result{Result: result}, nil
 		}
 		if !controllerUnavailable(err) {

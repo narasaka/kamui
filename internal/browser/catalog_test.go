@@ -64,6 +64,23 @@ func TestCatalogListsDetectedBrowsersInPreferenceOrder(t *testing.T) {
 	}
 }
 
+func TestCatalogInfersGeckoFamilyForAbsoluteFirefoxPath(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "Firefox.app", "Contents", "MacOS", "firefox")
+	catalog := browser.NewCatalog([]browser.Adapter{
+		browser.NewChromiumAdapter("chrome", nil, &recordingLauncher{}),
+		browser.NewGeckoAdapter("firefox", nil, &recordingLauncher{}),
+	})
+	selected, err := catalog.Select(context.Background(), browser.Selection{Explicit: path})
+	if err != nil {
+		t.Fatalf("Select returned error: %v", err)
+	}
+	if selected.Adapter.ID() != "firefox" || selected.Installation.Executable != path {
+		t.Fatalf("selected = %#v, want Firefox absolute path", selected)
+	}
+}
+
 func TestDefaultChromiumAdaptersUseRequiredStableIdentifiers(t *testing.T) {
 	t.Parallel()
 
