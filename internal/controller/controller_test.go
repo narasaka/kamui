@@ -149,6 +149,50 @@ func TestLegacyShutdownRejectsUnverifiedProcessMetadata(t *testing.T) {
 	}
 }
 
+func TestControllerStatusRoundTripsMirrorConflicts(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-mirror-status-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	occupied, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = occupied.Close() })
+	port := uint16(occupied.Addr().(*net.TCPAddr).Port)
+	layout := state.NewLayout(root)
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:        ssh.Transport{Launcher: &controllerLauncher{}, ReadinessTimeout: time.Second},
+		MirrorDiscoverer: controllerDiscoverer{ports: []uint16{port}},
+		MirrorInterval:   10 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	result, err := (controller.Client{Layout: layout}).Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true, EnableMirror: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Session.Mirror.Enabled || len(result.Session.Mirror.ConflictedPorts) != 1 || result.Session.Mirror.ConflictedPorts[0].Port != port {
+		t.Fatalf("mirror status = %#v, want conflict on %d", result.Session.Mirror, port)
+	}
+}
+
+type controllerDiscoverer struct{ ports []uint16 }
+
+func (d controllerDiscoverer) ListeningPorts(context.Context, string) ([]uint16, error) {
+	return append([]uint16(nil), d.ports...), nil
+}
+
 type controllerLauncher struct {
 	mu     sync.Mutex
 	starts int

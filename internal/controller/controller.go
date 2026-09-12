@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/narasaka/kamui/internal/browser"
+	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/state"
@@ -165,6 +166,7 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 		StopBrowserOnStop: command.StopBrowserOnStop,
 		LoopbackMode:      command.LoopbackMode,
 		Unattended:        command.Unattended,
+		EnableMirror:      command.EnableMirror,
 	}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return session.Result{}, fmt.Errorf("send controller command: %w", err)
@@ -314,6 +316,7 @@ func (s *Server) handle(connection net.Conn) {
 		StopBrowserOnStop: request.StopBrowserOnStop,
 		LoopbackMode:      request.LoopbackMode,
 		Unattended:        request.Unattended,
+		EnableMirror:      request.EnableMirror,
 	}
 	if request.Async {
 		_ = json.NewEncoder(connection).Encode(wireResponse{})
@@ -394,6 +397,7 @@ type wireRequest struct {
 	StopBrowserOnStop bool               `json:"stopBrowserOnStop,omitempty"`
 	LoopbackMode      proxy.LoopbackMode `json:"loopbackMode,omitempty"`
 	Unattended        bool               `json:"unattended,omitempty"`
+	EnableMirror      bool               `json:"enableMirror,omitempty"`
 	Probe             bool               `json:"probe,omitempty"`
 	Shutdown          bool               `json:"shutdown,omitempty"`
 	ExpectedProtocol  int                `json:"expectedProtocol,omitempty"`
@@ -407,6 +411,14 @@ type wireStatus struct {
 	LoopbackMode proxy.LoopbackMode   `json:"loopbackMode,omitempty"`
 	Browser      string               `json:"browser,omitempty"`
 	LastError    string               `json:"lastError,omitempty"`
+	Mirror       wireMirrorStatus     `json:"mirror,omitempty"`
+}
+
+type wireMirrorStatus struct {
+	Enabled         bool              `json:"enabled,omitempty"`
+	MirroredPorts   []uint16          `json:"mirroredPorts,omitempty"`
+	ConflictedPorts []mirror.Conflict `json:"conflictedPorts,omitempty"`
+	LastError       string            `json:"lastError,omitempty"`
 }
 
 type wireResult struct {
@@ -436,9 +448,16 @@ func makeWireStatus(status session.SessionStatus) wireStatus {
 	wire := wireStatus{
 		Destination: status.Destination.String(), State: status.State,
 		Proxy: status.Proxy.String(), LoopbackMode: status.LoopbackMode, Browser: status.Browser,
+		Mirror: wireMirrorStatus{
+			Enabled: status.Mirror.Enabled, MirroredPorts: status.Mirror.MirroredPorts,
+			ConflictedPorts: status.Mirror.ConflictedPorts,
+		},
 	}
 	if status.LastError != nil {
 		wire.LastError = status.LastError.Error()
+	}
+	if status.Mirror.LastError != nil {
+		wire.Mirror.LastError = status.Mirror.LastError.Error()
 	}
 	return wire
 }
@@ -474,9 +493,16 @@ func (s wireStatus) sessionStatus() (session.SessionStatus, error) {
 	status := session.SessionStatus{
 		Destination: destination, State: s.State, Proxy: proxyAddress,
 		LoopbackMode: s.LoopbackMode, Browser: s.Browser,
+		Mirror: mirror.Status{
+			Enabled: s.Mirror.Enabled, MirroredPorts: s.Mirror.MirroredPorts,
+			ConflictedPorts: s.Mirror.ConflictedPorts,
+		},
 	}
 	if s.LastError != "" {
 		status.LastError = errors.New(s.LastError)
+	}
+	if s.Mirror.LastError != "" {
+		status.Mirror.LastError = errors.New(s.Mirror.LastError)
 	}
 	return status, nil
 }
