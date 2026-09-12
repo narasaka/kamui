@@ -39,3 +39,9 @@ type Adapter interface {
 type Launcher interface {
 	Launch(context.Context, string, []string) error
 }
+
+// ProfileStopper is an optional launcher capability used when a user opts in
+// to closing the dedicated browser with the Kamui session.
+type ProfileStopper interface {
+	Stop(context.Context, string, []string) error
+}

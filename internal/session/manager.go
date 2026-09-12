@@ -28,12 +28,13 @@ const (
 
 // Command is one request against the session lifecycle interface.
 type Command struct {
-	Operation   Operation
-	Destination Destination
-	Browser     browser.Selection
-	URLs        []string
-	SkipBrowser bool
-	IdleTimeout time.Duration
+	Operation         Operation
+	Destination       Destination
+	Browser           browser.Selection
+	URLs              []string
+	SkipBrowser       bool
+	IdleTimeout       time.Duration
+	StopBrowserOnStop bool
 }
 
 // SessionState is the user-visible lifecycle state.
@@ -92,6 +93,7 @@ type managedSession struct {
 	browserAdapter browser.Adapter
 	browserProfile browser.Profile
 	idleTimeout    time.Duration
+	stopBrowser    bool
 }
 
 // NewManager creates an empty session manager.
@@ -165,7 +167,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 	sessionContext, cancel := context.WithCancel(m.ctx)
 	managed := &managedSession{
 		ctx: sessionContext, cancel: cancel, destination: destination,
-		connection: connection, idleTimeout: command.IdleTimeout,
+		connection: connection, idleTimeout: command.IdleTimeout, stopBrowser: command.StopBrowserOnStop,
 	}
 	runningProxy, err := proxy.Start(m.ctx, proxy.Dialers{
 		Direct: (&net.Dialer{}).DialContext,
@@ -300,12 +302,25 @@ func (s *managedSession) dial(ctx context.Context, network, address string) (net
 }
 
 func (s *managedSession) close() error {
-	s.cancel()
 	s.mu.RLock()
 	connection := s.connection
 	runningProxy := s.proxy
+	adapter := s.browserAdapter
+	profile := s.browserProfile
+	stopBrowser := s.stopBrowser
 	s.mu.RUnlock()
-	return errors.Join(runningProxy.Close(), connection.Close())
+	var browserErr error
+	if stopBrowser && adapter != nil {
+		if closer, ok := adapter.(interface {
+			Close(context.Context, browser.Profile) error
+		}); ok {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			browserErr = closer.Close(ctx, profile)
+			cancel()
+		}
+	}
+	s.cancel()
+	return errors.Join(browserErr, runningProxy.Close(), connection.Close())
 }
 
 func (m *Manager) monitor(managed *managedSession) {

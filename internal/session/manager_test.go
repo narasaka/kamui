@@ -131,6 +131,39 @@ func TestManagerLaunchesSelectedBrowserAndOpensURLsInItsProfile(t *testing.T) {
 	}
 }
 
+func TestManagerStopsDedicatedBrowserWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	executable := filepath.Join(root, "chrome")
+	if err := os.WriteFile(executable, []byte("browser"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	browserLauncher := &sessionBrowserLauncher{}
+	catalog := browser.NewCatalog([]browser.Adapter{
+		browser.NewChromiumAdapter("chrome", []string{executable}, browserLauncher),
+	})
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:   ssh.Transport{Launcher: &managerLauncher{}, ReadinessTimeout: time.Second},
+		Browsers:    catalog,
+		ProfileRoot: filepath.Join(root, "profiles"),
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	if _, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination,
+		Browser: browser.Selection{Explicit: "chrome"}, StopBrowserOnStop: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Execute(context.Background(), session.Command{Operation: session.Stop, Destination: destination}); err != nil {
+		t.Fatal(err)
+	}
+	if got := browserLauncher.stopCount(); got != 1 {
+		t.Fatalf("browser stops = %d, want 1", got)
+	}
+}
+
 func TestManagerReconnectsAfterTransientSSHExit(t *testing.T) {
 	t.Parallel()
 
@@ -263,6 +296,7 @@ type managerProcess struct {
 type sessionBrowserLauncher struct {
 	mu    sync.Mutex
 	calls int
+	stops int
 }
 
 type authenticationLauncher struct {
@@ -349,6 +383,19 @@ func (l *sessionBrowserLauncher) count() int {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.calls
+}
+
+func (l *sessionBrowserLauncher) Stop(context.Context, string, []string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stops++
+	return nil
+}
+
+func (l *sessionBrowserLauncher) stopCount() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.stops
 }
 
 func (p *managerProcess) Wait() error {

@@ -110,6 +110,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	selection := request.Browser
 	skipBrowser := false
 	idleTimeout := time.Duration(0)
+	stopBrowserOnStop := false
 	if request.Operation == Ensure || request.Operation == SSHHook {
 		var overrides config.Overrides
 		if selection.Explicit != "" {
@@ -131,11 +132,13 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 			skipBrowser = true
 		}
 		idleTimeout = effective.IdleTimeout
+		stopBrowserOnStop = effective.StopBrowserOnStop
 	}
 	command := session.Command{
 		Operation: operation, Destination: destination, Browser: selection, URLs: request.URLs,
-		SkipBrowser: skipBrowser,
-		IdleTimeout: idleTimeout,
+		SkipBrowser:       skipBrowser,
+		IdleTimeout:       idleTimeout,
+		StopBrowserOnStop: stopBrowserOnStop,
 	}
 	call := func() (session.Result, error) {
 		if request.Operation == SSHHook {

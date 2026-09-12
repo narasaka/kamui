@@ -16,7 +16,7 @@ type geckoAdapter struct {
 // NewGeckoAdapter creates an adapter for one Gecko-family identifier.
 func NewGeckoAdapter(id string, candidates []string, launcher Launcher) Adapter {
 	if launcher == nil {
-		launcher = execLauncher{}
+		launcher = newExecLauncher()
 	}
 	return &geckoAdapter{id: id, candidates: append([]string(nil), candidates...), launcher: launcher}
 }
@@ -101,6 +101,14 @@ func (a *geckoAdapter) Open(ctx context.Context, profile Profile, urls []string)
 		return fmt.Errorf("open in %s: %w", a.id, err)
 	}
 	return nil
+}
+
+func (a *geckoAdapter) Close(ctx context.Context, profile Profile) error {
+	stopper, ok := a.launcher.(ProfileStopper)
+	if !ok {
+		return nil
+	}
+	return stopper.Stop(ctx, profile.Installation.Executable, []string{"-profile", profile.Path})
 }
 
 // DefaultGeckoAdapters returns Gecko-family adapters in deterministic order.

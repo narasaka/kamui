@@ -53,14 +53,15 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 	}
 	defer connection.Close()
 	request := wireRequest{
-		Token:       string(token),
-		Operation:   command.Operation,
-		Destination: command.Destination.String(),
-		Browser:     command.Browser,
-		URLs:        command.URLs,
-		Async:       async,
-		SkipBrowser: command.SkipBrowser,
-		IdleTimeout: command.IdleTimeout,
+		Token:             string(token),
+		Operation:         command.Operation,
+		Destination:       command.Destination.String(),
+		Browser:           command.Browser,
+		URLs:              command.URLs,
+		Async:             async,
+		SkipBrowser:       command.SkipBrowser,
+		IdleTimeout:       command.IdleTimeout,
+		StopBrowserOnStop: command.StopBrowserOnStop,
 	}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return session.Result{}, fmt.Errorf("send controller command: %w", err)
@@ -180,8 +181,9 @@ func (s *Server) handle(connection net.Conn) {
 	}
 	command := session.Command{
 		Operation: request.Operation, Destination: destination, Browser: request.Browser, URLs: request.URLs,
-		SkipBrowser: request.SkipBrowser,
-		IdleTimeout: request.IdleTimeout,
+		SkipBrowser:       request.SkipBrowser,
+		IdleTimeout:       request.IdleTimeout,
+		StopBrowserOnStop: request.StopBrowserOnStop,
 	}
 	if request.Async {
 		_ = json.NewEncoder(connection).Encode(wireResponse{})
@@ -247,14 +249,15 @@ func writeToken(path string) (string, error) {
 }
 
 type wireRequest struct {
-	Token       string            `json:"token"`
-	Operation   session.Operation `json:"operation"`
-	Destination string            `json:"destination"`
-	Browser     browser.Selection `json:"browser"`
-	URLs        []string          `json:"urls,omitempty"`
-	Async       bool              `json:"async,omitempty"`
-	SkipBrowser bool              `json:"skipBrowser,omitempty"`
-	IdleTimeout time.Duration     `json:"idleTimeout,omitempty"`
+	Token             string            `json:"token"`
+	Operation         session.Operation `json:"operation"`
+	Destination       string            `json:"destination"`
+	Browser           browser.Selection `json:"browser"`
+	URLs              []string          `json:"urls,omitempty"`
+	Async             bool              `json:"async,omitempty"`
+	SkipBrowser       bool              `json:"skipBrowser,omitempty"`
+	IdleTimeout       time.Duration     `json:"idleTimeout,omitempty"`
+	StopBrowserOnStop bool              `json:"stopBrowserOnStop,omitempty"`
 }
 
 type wireStatus struct {
