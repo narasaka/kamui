@@ -4,7 +4,10 @@ import (
 	"context"
 	"net"
 	"os"
+	"os/exec"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -74,6 +77,133 @@ func TestTenConcurrentClientsCreateOneHostSession(t *testing.T) {
 	if _, err := client.Execute(context.Background(), session.Command{Operation: session.Stop, Destination: destination}); err != nil {
 		t.Fatalf("stop through controller: %v", err)
 	}
+}
+
+func TestClientNegotiatesAuthenticatedControllerIdentity(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-identity-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManager(ssh.Transport{Launcher: &controllerLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	identity := controller.Identity{Protocol: 2, Build: "test-build"}
+	server, err := controller.StartWithIdentity(ctx, layout, manager, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cancel(); _ = server.Close() })
+
+	got, err := (controller.Client{Layout: layout}).Identity(context.Background())
+	if err != nil {
+		t.Fatalf("Identity returned error: %v", err)
+	}
+	if got.Protocol != identity.Protocol || got.Build != identity.Build || got.Legacy {
+		t.Fatalf("identity = %#v, want protocol %d build %q and non-legacy", got, identity.Protocol, identity.Build)
+	}
+}
+
+func TestAuthenticatedShutdownStopsTheNegotiatedController(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-shutdown-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManager(ssh.Transport{Launcher: &controllerLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	identity := controller.Identity{Protocol: 2, Build: "old-build"}
+	server, err := controller.StartWithIdentity(context.Background(), layout, manager, identity)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := (controller.Client{Layout: layout}).Shutdown(context.Background(), identity); err != nil {
+		t.Fatalf("Shutdown returned error: %v", err)
+	}
+	select {
+	case <-server.Done():
+	case <-time.After(time.Second):
+		t.Fatal("controller did not stop after authenticated shutdown")
+	}
+	replacement, err := controller.StartWithIdentity(context.Background(), layout, manager, controller.Identity{Protocol: 2, Build: "new-build"})
+	if err != nil {
+		t.Fatalf("controller lock was not released: %v", err)
+	}
+	t.Cleanup(func() { _ = replacement.Close() })
+}
+
+func TestLegacyShutdownRejectsUnverifiedProcessMetadata(t *testing.T) {
+	t.Parallel()
+
+	unrelated := exec.Command("sleep", "30")
+	if err := unrelated.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = unrelated.Process.Kill()
+		_ = unrelated.Wait()
+	})
+	layout := state.NewLayout(t.TempDir())
+	err := (controller.Client{Layout: layout}).ShutdownLegacy(context.Background(), controller.Identity{
+		Legacy: true, PID: unrelated.Process.Pid,
+	})
+	if err == nil || !strings.Contains(err.Error(), "controller token") {
+		t.Fatalf("ShutdownLegacy error = %v, want authenticated-channel rejection", err)
+	}
+	if err := unrelated.Process.Signal(syscall.Signal(0)); err != nil {
+		t.Fatalf("unrelated process was affected by stale metadata: %v", err)
+	}
+}
+
+func TestControllerStatusRoundTripsMirrorConflicts(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-mirror-status-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	occupied, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = occupied.Close() })
+	port := uint16(occupied.Addr().(*net.TCPAddr).Port)
+	layout := state.NewLayout(root)
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:        ssh.Transport{Launcher: &controllerLauncher{}, ReadinessTimeout: time.Second},
+		MirrorDiscoverer: controllerDiscoverer{ports: []uint16{port}},
+		MirrorInterval:   10 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	result, err := (controller.Client{Layout: layout}).Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true, EnableMirror: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Session.Mirror.Enabled || len(result.Session.Mirror.ConflictedPorts) != 1 || result.Session.Mirror.ConflictedPorts[0].Port != port {
+		t.Fatalf("mirror status = %#v, want conflict on %d", result.Session.Mirror, port)
+	}
+}
+
+type controllerDiscoverer struct{ ports []uint16 }
+
+func (d controllerDiscoverer) ListeningPorts(context.Context, string) ([]uint16, error) {
+	return append([]uint16(nil), d.ports...), nil
 }
 
 type controllerLauncher struct {

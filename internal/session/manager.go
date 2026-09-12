@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/narasaka/kamui/internal/browser"
+	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/ssh"
 )
@@ -39,6 +40,7 @@ type Command struct {
 	StopBrowserOnStop bool
 	LoopbackMode      proxy.LoopbackMode
 	Unattended        bool
+	EnableMirror      bool
 }
 
 // SessionState is the user-visible lifecycle state.
@@ -59,15 +61,18 @@ type SessionStatus struct {
 	LoopbackMode proxy.LoopbackMode
 	LastError    error
 	Browser      string
+	Mirror       mirror.Status
 }
 
 // ManagerOptions supplies session implementations and profile storage.
 type ManagerOptions struct {
-	Transport      ssh.Transport
-	Browsers       *browser.Catalog
-	ProfileRoot    string
-	Logger         *slog.Logger
-	ProxyAddresses ProxyAddressStore
+	Transport        ssh.Transport
+	Browsers         *browser.Catalog
+	ProfileRoot      string
+	Logger           *slog.Logger
+	ProxyAddresses   ProxyAddressStore
+	MirrorDiscoverer mirror.Discoverer
+	MirrorInterval   time.Duration
 }
 
 // ProxyAddressStore persists one loopback proxy endpoint per exact destination.
@@ -84,16 +89,18 @@ type Result struct {
 
 // Manager owns all in-process host sessions.
 type Manager struct {
-	mu             sync.Mutex
-	transport      ssh.Transport
-	browsers       *browser.Catalog
-	profileRoot    string
-	ctx            context.Context
-	cancel         context.CancelFunc
-	sessions       map[string]*managedSession
-	closed         bool
-	logger         *slog.Logger
-	proxyAddresses ProxyAddressStore
+	mu               sync.Mutex
+	transport        ssh.Transport
+	browsers         *browser.Catalog
+	profileRoot      string
+	ctx              context.Context
+	cancel           context.CancelFunc
+	sessions         map[string]*managedSession
+	closed           bool
+	logger           *slog.Logger
+	proxyAddresses   ProxyAddressStore
+	mirrorDiscoverer mirror.Discoverer
+	mirrorInterval   time.Duration
 }
 
 type managedSession struct {
@@ -111,6 +118,7 @@ type managedSession struct {
 	idleTimeout     time.Duration
 	stopBrowser     bool
 	reconnectPaused bool
+	mirror          *mirror.Running
 }
 
 // NewManager creates an empty session manager.
@@ -126,14 +134,16 @@ func NewManagerWithOptions(options ManagerOptions) *Manager {
 		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 	}
 	return &Manager{
-		transport:      options.Transport,
-		browsers:       options.Browsers,
-		profileRoot:    options.ProfileRoot,
-		ctx:            ctx,
-		cancel:         cancel,
-		sessions:       make(map[string]*managedSession),
-		logger:         logger,
-		proxyAddresses: options.ProxyAddresses,
+		transport:        options.Transport,
+		browsers:         options.Browsers,
+		profileRoot:      options.ProfileRoot,
+		ctx:              ctx,
+		cancel:           cancel,
+		sessions:         make(map[string]*managedSession),
+		logger:           logger,
+		proxyAddresses:   options.ProxyAddresses,
+		mirrorDiscoverer: options.MirrorDiscoverer,
+		mirrorInterval:   options.MirrorInterval,
 	}
 }
 
@@ -181,6 +191,9 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 			existing.mu.Unlock()
 			_ = old.Close()
 		}
+		if err := m.addCapabilities(ctx, existing, command); err != nil {
+			return Result{}, err
+		}
 		return Result{Session: existing.snapshot()}, nil
 	}
 
@@ -220,32 +233,59 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 			return Result{}, fmt.Errorf("remember proxy address: %w", err)
 		}
 	}
-	if m.browsers != nil && !command.SkipBrowser {
-		selected, err := m.browsers.Select(ctx, command.Browser)
-		if err != nil {
-			_ = managed.close()
-			return Result{}, err
-		}
-		profile, err := selected.Adapter.PrepareProfile(ctx, browser.Session{
-			Key:         destination.Key(),
-			Proxy:       runningProxy.Addr(),
-			ProfileRoot: m.profileRoot,
-		}, selected.Installation)
-		if err != nil {
-			_ = managed.close()
-			return Result{}, err
-		}
-		if err := selected.Adapter.Launch(ctx, profile, command.URLs); err != nil {
-			_ = managed.close()
-			return Result{}, err
-		}
-		managed.browserAdapter = selected.Adapter
-		managed.browserProfile = profile
+	if err := m.addCapabilities(ctx, managed, command); err != nil {
+		_ = managed.close()
+		return Result{}, err
 	}
 	m.sessions[destination.Key()] = managed
 	m.logger.Info("Kamui session lifecycle", "event", "session_started", "session_key", destination.Key(), "browser", managed.snapshot().Browser)
 	go m.monitor(managed)
 	return Result{Session: managed.snapshot()}, nil
+}
+
+func (m *Manager) addCapabilities(ctx context.Context, managed *managedSession, command Command) error {
+	managed.mu.RLock()
+	hasMirror := managed.mirror != nil
+	hasBrowser := managed.browserAdapter != nil
+	runningProxy := managed.proxy
+	managed.mu.RUnlock()
+	if command.EnableMirror && !hasMirror {
+		discoverer := m.mirrorDiscoverer
+		if discoverer == nil {
+			discoverer = mirror.SSHDiscoverer{SSHPath: m.transport.SSHPath}
+		}
+		runningMirror, err := mirror.Start(managed.ctx, managed.destination.String(), discoverer, func(ctx context.Context, network, address string) (net.Conn, error) {
+			return managed.dial(ctx, network, address)
+		}, mirror.Options{ReconcileInterval: m.mirrorInterval})
+		if err != nil {
+			return err
+		}
+		managed.mu.Lock()
+		managed.mirror = runningMirror
+		managed.mu.Unlock()
+	}
+	if m.browsers != nil && !command.SkipBrowser && !hasBrowser {
+		selected, err := m.browsers.Select(ctx, command.Browser)
+		if err != nil {
+			return err
+		}
+		profile, err := selected.Adapter.PrepareProfile(ctx, browser.Session{
+			Key:         managed.destination.Key(),
+			Proxy:       runningProxy.Addr(),
+			ProfileRoot: m.profileRoot,
+		}, selected.Installation)
+		if err != nil {
+			return err
+		}
+		if err := selected.Adapter.Launch(ctx, profile, command.URLs); err != nil {
+			return err
+		}
+		managed.mu.Lock()
+		managed.browserAdapter = selected.Adapter
+		managed.browserProfile = profile
+		managed.mu.Unlock()
+	}
+	return nil
 }
 
 func (m *Manager) connect(ctx context.Context, destination Destination, unattended bool) (*ssh.Connection, error) {
@@ -341,6 +381,9 @@ func (s *managedSession) snapshot() SessionStatus {
 	if s.browserAdapter != nil {
 		status.Browser = s.browserAdapter.ID()
 	}
+	if s.mirror != nil {
+		status.Mirror = s.mirror.Status()
+	}
 	return status
 }
 
@@ -358,6 +401,7 @@ func (s *managedSession) close() error {
 	adapter := s.browserAdapter
 	profile := s.browserProfile
 	stopBrowser := s.stopBrowser
+	runningMirror := s.mirror
 	s.mu.RUnlock()
 	var browserErr error
 	if stopBrowser && adapter != nil {
@@ -370,7 +414,11 @@ func (s *managedSession) close() error {
 		}
 	}
 	s.cancel()
-	return errors.Join(browserErr, runningProxy.Close(), connection.Close())
+	var mirrorErr error
+	if runningMirror != nil {
+		mirrorErr = runningMirror.Close()
+	}
+	return errors.Join(browserErr, mirrorErr, runningProxy.Close(), connection.Close())
 }
 
 func (m *Manager) monitor(managed *managedSession) {

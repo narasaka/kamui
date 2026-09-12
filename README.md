@@ -10,6 +10,11 @@ host.
 > security treatment associated with `localhost`. Use only hosts you trust and
 > keep the Kamui browser profile separate from ordinary browsing.
 
+`kamui mirror` deliberately exposes the selected remote host's TCP services to
+every process on the Mac through localhost. Any local application may connect,
+and browsers apply localhost-origin security treatment. Mirror only hosts and
+services you trust.
+
 Installation, upgrade, uninstall, and release-build instructions are in
 [the installation guide](docs/install.md).
 
@@ -65,7 +70,10 @@ kamui my-dev-server --browser firefox
 
 # Prefer genuine Mac loopback services, falling back to the remote host only
 # when neither Mac loopback address accepts the connection.
-kamui my-dev-server --loopback local-first
+kamui my-dev-server --browser-loopback local-first
+
+# Make currently listening remote TCP ports available to all Mac applications
+kamui mirror my-dev-server
 ```
 
 The destination is passed to OpenSSH as one positional argument. SSH aliases,
@@ -77,6 +85,7 @@ Supporting commands are:
 
 ```sh
 kamui status [SSH_DESTINATION]
+kamui mirror SSH_DESTINATION
 kamui stop SSH_DESTINATION
 kamui stop --all
 kamui open SSH_DESTINATION [URL ...]
@@ -95,6 +104,38 @@ of them; it exits unsuccessfully because no session was stopped.
 See [the CLI contract](docs/cli.md) and
 [configuration reference](docs/configuration.md) for details.
 
+## Transparent TCP port mirroring
+
+`kamui mirror SSH_DESTINATION` discovers listening TCP ports with `ss` on the
+remote host and creates same-numbered listeners on both Mac `127.0.0.1` and
+`::1`. Connections from any local TCP client—including ordinary browsers, T3
+Code's browser, and `curl http://localhost:PORT`—are carried through Kamui's
+existing SSH transport to the same remote loopback port. The command never
+launches a browser and requires no port list.
+
+Kamui reconciles discovery every five seconds. A newly discovered listener is
+claimed when both Mac loopback addresses are available; a vanished listener is
+released. A Mac listener or an already-running Kamui mirror wins a conflict.
+The losing destination remains enabled, reports the conflicted port in
+`kamui status`, and retries, so it claims the port if the winner later releases
+it. This also makes ownership deterministic over time: the existing listener
+keeps the port. A local process that starts after Kamui claimed a port initially
+receives `address already in use`.
+
+Mirroring uses real unprivileged loopback TCP listeners. It does not change
+browser proxy settings, the system HTTP proxy, packet-filter rules, or Network
+Extensions. It is TCP-only; UDP services, QUIC, and HTTP/3 are not mirrored.
+The remote host must provide `ss`, and discovery failures are shown by
+`kamui status` without tearing down already-established listeners.
+Each discovery command is bounded to ten seconds and is killed when the mirror
+session stops.
+
+Browser and mirror capabilities compose on one exact-destination session.
+Running `kamui mirror my-dev-server` adds mirroring to an existing browser
+session. Running `kamui my-dev-server` later adds the dedicated browser to a
+mirror-created session. `kamui stop my-dev-server` closes the proxy, SSH
+transport, and all mirrored listeners.
+
 ## Localhost behavior and limitations
 
 Inside a Kamui development profile, `localhost`, names ending in `.localhost`,
@@ -104,7 +145,8 @@ to remote `::1`, allowing services bound to either address family. In this
 default mode, those names cannot simultaneously reach genuine Mac loopback
 services from that profile.
 
-This remote-only behavior is the default. With `--loopback local-first`, Kamui
+This remote-only behavior is the default. With
+`--browser-loopback local-first`, Kamui
 first tries the requested port on Mac `127.0.0.1` and `::1`. It falls back to
 the remote host only when both connections are refused. Other local failures,
 HTTP error responses, and TLS errors do not trigger fallback. Existing HTTP
@@ -116,14 +158,21 @@ the remote host may access genuine Mac loopback services and the same browser
 origin may be served by different machines as listeners start or stop. Enable
 it only for trusted remote hosts and trusted local services.
 
-Only browser TCP traffic is covered. UDP and HTTP/3 are not transported, and
+`--browser-loopback` affects only Kamui's dedicated browser proxy and is
+unrelated to `kamui mirror`. The old `--loopback` spelling remains as a
+deprecated compatibility alias and prints a notice; its `v0.0.4` behavior is
+unchanged.
+
+Without `kamui mirror`, only dedicated-browser TCP traffic is covered. UDP and
+HTTP/3 are not transported in either mode, and
 Safari is not supported. Ordinary non-loopback browser destinations connect
 directly from the Mac. Kamui does not launch, install, or configure remote
 application services and does not require Tailscale.
 
 A dropped SSH tunnel breaks existing streams and WebSockets; new connections
 resume after a successful bounded reconnect. Browser-native UDP and HTTP/3 do
-not cross the proxy. Native applications and terminal commands are unaffected.
+not cross the proxy. Native applications and terminal commands are unaffected
+unless the user explicitly enables `kamui mirror`.
 Browser compatibility can change between releases. Safari and system-wide
 loopback interception are intentionally out of scope.
 
@@ -153,6 +202,12 @@ your SSH configuration yourself.
   `kamui logs --follow` to stream them. The underlying user-only log is at
   `~/Library/Application Support/kamui/logs/openssh.log` on macOS.
 - Use `kamui stop --all` before removing runtime state.
+- After an executable upgrade, the first controller-backed command
+  authenticates the resident controller, compares protocol/build identity,
+  gracefully replaces a stale controller, and retries the command. The
+  requested destination is recreated automatically. Other in-memory sessions
+  are not reconstructed and must be started again. The
+  `controller_upgrade_restart` event is recorded in the controller log.
 
 ## Development
 

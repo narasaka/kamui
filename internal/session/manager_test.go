@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/narasaka/kamui/internal/browser"
+	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/ssh"
@@ -271,6 +272,98 @@ func TestManagerLaunchesSelectedBrowserAndOpensURLsInItsProfile(t *testing.T) {
 		t.Fatalf("browser launches = %d, want initial launch plus open", got)
 	}
 }
+
+func TestManagerAddsBrowserAfterMirrorCreatedSession(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	executable := filepath.Join(root, "chrome")
+	if err := os.WriteFile(executable, []byte("browser"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	browserLauncher := &sessionBrowserLauncher{}
+	catalog := browser.NewCatalog([]browser.Adapter{
+		browser.NewChromiumAdapter("chrome", []string{executable}, browserLauncher),
+	})
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:        ssh.Transport{Launcher: &managerLauncher{}, ReadinessTimeout: time.Second},
+		Browsers:         catalog,
+		ProfileRoot:      filepath.Join(root, "profiles"),
+		MirrorDiscoverer: staticDiscoverer{},
+		MirrorInterval:   10 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	first, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true, EnableMirror: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Session.Browser != "" || !first.Session.Mirror.Enabled || browserLauncher.count() != 0 {
+		t.Fatalf("mirror-created session = %#v, launches=%d", first.Session, browserLauncher.count())
+	}
+	second, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, Browser: browser.Selection{Explicit: "chrome"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Session.Browser != "chrome" || !second.Session.Mirror.Enabled || browserLauncher.count() != 1 {
+		t.Fatalf("composed session = %#v, launches=%d", second.Session, browserLauncher.count())
+	}
+	if second.Session.Proxy != first.Session.Proxy {
+		t.Fatalf("proxy changed from %s to %s while adding browser", first.Session.Proxy, second.Session.Proxy)
+	}
+}
+
+func TestManagerAddsMirrorToBrowserSessionWithoutRelaunching(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	executable := filepath.Join(root, "chrome")
+	if err := os.WriteFile(executable, []byte("browser"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	browserLauncher := &sessionBrowserLauncher{}
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport: ssh.Transport{Launcher: &managerLauncher{}, ReadinessTimeout: time.Second},
+		Browsers: browser.NewCatalog([]browser.Adapter{
+			browser.NewChromiumAdapter("chrome", []string{executable}, browserLauncher),
+		}),
+		ProfileRoot:      filepath.Join(root, "profiles"),
+		MirrorDiscoverer: staticDiscoverer{},
+		MirrorInterval:   10 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	first, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, Browser: browser.Selection{Explicit: "chrome"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true, EnableMirror: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !second.Session.Mirror.Enabled || second.Session.Browser != "chrome" || browserLauncher.count() != 1 {
+		t.Fatalf("composed session = %#v, launches=%d", second.Session, browserLauncher.count())
+	}
+	if second.Session.Proxy != first.Session.Proxy {
+		t.Fatalf("proxy changed from %s to %s while adding mirror", first.Session.Proxy, second.Session.Proxy)
+	}
+}
+
+type staticDiscoverer struct{ ports []uint16 }
+
+func (d staticDiscoverer) ListeningPorts(context.Context, string) ([]uint16, error) {
+	return append([]uint16(nil), d.ports...), nil
+}
+
+var _ mirror.Discoverer = staticDiscoverer{}
 
 func TestManagerStopsDedicatedBrowserWhenConfigured(t *testing.T) {
 	t.Parallel()

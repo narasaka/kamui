@@ -19,6 +19,14 @@ brew update
 brew upgrade narasaka/tap/kamui
 ```
 
+The next controller-backed invocation authenticates the resident Kamui
+controller and compares its protocol/build identity with the new executable. A
+stale controller is gracefully replaced and the command is retried. The
+destination requested by that command is recreated automatically; other
+in-memory sessions are not reconstructed and must be started again. An
+upgrade-triggered handoff is recorded as `controller_upgrade_restart` in
+`~/Library/Application Support/kamui/logs/controller.jsonl`.
+
 Uninstall the binary while preserving configuration and development profiles:
 
 ```sh

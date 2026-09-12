@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,6 +34,7 @@ func TestPlannedCommandsReturnExplicitNotImplementedErrors(t *testing.T) {
 		want string
 	}{
 		{name: "primary", args: []string{"kamui", "reyna"}, want: "ensure is not implemented"},
+		{name: "mirror", args: []string{"kamui", "mirror", "reyna"}, want: "mirror is not implemented"},
 		{name: "status", args: []string{"kamui", "status", "reyna"}, want: "status is not implemented"},
 		{name: "stop destination", args: []string{"kamui", "stop", "reyna"}, want: "stop is not implemented"},
 		{name: "stop all", args: []string{"kamui", "stop", "--all"}, want: "stop is not implemented"},
@@ -72,6 +74,7 @@ func TestNoArgumentsShowsCommandHelp(t *testing.T) {
 		"USAGE:\n",
 		"COMMANDS:\n",
 		"logs              show OpenSSH background diagnostics\n",
+		"mirror            mirror remote TCP listeners on Mac loopback\n",
 		"status            show session status\n",
 		"stop              stop one or all sessions\n",
 		"open              open URLs in a session browser\n",
@@ -142,7 +145,7 @@ func TestPrimaryCommandEnablesLocalFirstLoopbackRouting(t *testing.T) {
 	var output bytes.Buffer
 	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
 
-	if err := command.Run(context.Background(), []string{"kamui", "reyna", "--loopback", "local-first"}); err != nil {
+	if err := command.Run(context.Background(), []string{"kamui", "reyna", "--browser-loopback", "local-first"}); err != nil {
 		t.Fatalf("run primary command: %v", err)
 	}
 	status, err := application.Execute(context.Background(), kamuiapp.Request{Operation: kamuiapp.Status, Destination: "reyna"})
@@ -174,12 +177,121 @@ func TestPrimaryCommandEnablesLocalFirstLoopbackRouting(t *testing.T) {
 	}
 	var repeatedOutput bytes.Buffer
 	repeated := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &repeatedOutput, ErrOut: &repeatedOutput})
-	if err := repeated.Run(context.Background(), []string{"kamui", "reyna", "--loopback", "local-first"}); err != nil {
+	if err := repeated.Run(context.Background(), []string{"kamui", "reyna", "--browser-loopback", "local-first"}); err != nil {
 		t.Fatalf("repeat primary command: %v", err)
 	}
 	if !strings.Contains(repeatedOutput.String(), "may access genuine Mac localhost services in local-first mode") {
 		t.Fatalf("repeated output = %q, want persistent local-first security warning", repeatedOutput.String())
 	}
+}
+
+func TestDeprecatedLoopbackAliasPrintsNotice(t *testing.T) {
+	t.Parallel()
+
+	var stdout, stderr bytes.Buffer
+	command := cliapp.NewCommand(cliapp.Streams{Out: &stdout, ErrOut: &stderr})
+	err := command.Run(context.Background(), []string{"kamui", "reyna", "--loopback", "local-first"})
+	if fmt.Sprint(err) != "ensure is not implemented" {
+		t.Fatalf("error = %v", err)
+	}
+	if got := stderr.String(); !strings.Contains(got, "--loopback is deprecated; use --browser-loopback") {
+		t.Fatalf("stderr = %q, want deprecation notice", got)
+	}
+}
+
+func TestDeprecatedLoopbackAliasRetainsLocalFirstBehavior(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-cli-loopback-alias-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	application := kamuiapp.New(layout, nil)
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+	if err := command.Run(context.Background(), []string{"kamui", "reyna", "--loopback", "local-first"}); err != nil {
+		t.Fatal(err)
+	}
+	status, err := application.Execute(context.Background(), kamuiapp.Request{Operation: kamuiapp.Status, Destination: "reyna"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Session.LoopbackMode.String() != "local-first" || !strings.Contains(output.String(), "--loopback is deprecated") {
+		t.Fatalf("mode=%s output=%q", status.Session.LoopbackMode, output.String())
+	}
+}
+
+func TestMirrorCommandDoesNotLaunchBrowserAndStatusShowsPorts(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-cli-mirror-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	occupied, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = occupied.Close() })
+	conflictPort := uint16(occupied.Addr().(*net.TCPAddr).Port)
+	probe, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mirroredPort := uint16(probe.Addr().(*net.TCPAddr).Port)
+	_ = probe.Close()
+
+	layout := state.NewLayout(root)
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:        ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second},
+		MirrorDiscoverer: cliDiscoverer{ports: []uint16{mirroredPort, conflictPort}},
+		MirrorInterval:   10 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	application := kamuiapp.New(layout, nil)
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+	if err := command.Run(context.Background(), []string{"kamui", "mirror", "reyna"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "mirroring enabled") || !strings.Contains(got, fmt.Sprint(mirroredPort)) || !strings.Contains(got, fmt.Sprint(conflictPort)) {
+		t.Fatalf("mirror output = %q", got)
+	}
+	output.Reset()
+	if err := command.Run(context.Background(), []string{"kamui", "status", "reyna"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "\tenabled\t") || !strings.Contains(got, fmt.Sprint(mirroredPort)) || !strings.Contains(got, fmt.Sprint(conflictPort)) {
+		t.Fatalf("status output = %q", got)
+	}
+	status, err := application.Execute(context.Background(), kamuiapp.Request{Operation: kamuiapp.Status, Destination: "reyna"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Session.Browser != "" {
+		t.Fatalf("mirror launched browser %q", status.Session.Browser)
+	}
+}
+
+type cliDiscoverer struct{ ports []uint16 }
+
+func (d cliDiscoverer) ListeningPorts(context.Context, string) ([]uint16, error) {
+	return append([]uint16(nil), d.ports...), nil
 }
 
 func TestPrimaryCommandRejectsInvalidLoopbackMode(t *testing.T) {
@@ -188,7 +300,7 @@ func TestPrimaryCommandRejectsInvalidLoopbackMode(t *testing.T) {
 	application := kamuiapp.New(state.NewLayout(t.TempDir()), nil)
 	var output bytes.Buffer
 	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
-	err := command.Run(context.Background(), []string{"kamui", "reyna", "--loopback", "sometimes-local"})
+	err := command.Run(context.Background(), []string{"kamui", "reyna", "--browser-loopback", "sometimes-local"})
 	if err == nil || !strings.Contains(err.Error(), `unsupported loopback mode "sometimes-local"`) {
 		t.Fatalf("error = %v, want unsupported loopback mode", err)
 	}
@@ -203,7 +315,7 @@ func TestStatusDistinguishesSessionStateFromSSHHealth(t *testing.T) {
 	if err := command.Run(context.Background(), []string{"kamui", "status", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\nreyna\tconnected\t\t%s\thealthy\n", status.Proxy)
+	want := fmt.Sprintf("DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tMIRROR\tMIRRORED\tCONFLICTS\tMIRROR ERROR\nreyna\tconnected\t\t%s\thealthy\tdisabled\t-\t-\t\n", status.Proxy)
 	if got := output.String(); got != want {
 		t.Fatalf("status output = %q, want %q", got, want)
 	}
@@ -236,9 +348,9 @@ func TestVerboseStatusIncludesLastTunnelError(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		"DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tLAST ERROR\n",
+		"DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tMIRROR\tMIRRORED\tCONFLICTS\tMIRROR ERROR\tLAST ERROR\n",
 		"reyna\tauthentication-required\t",
-		"\tauthentication-required\tSSH authentication failed for reyna:",
+		"SSH authentication failed for reyna:",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("verbose status output = %q, want substring %q", got, want)

@@ -77,7 +77,7 @@ func TestLoaderResolvesGlobalLoopbackMode(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(path, []byte(`{"loopback":"local-first"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"browserLoopback":"local-first"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	destination, _ := session.ParseDestination("reyna")
@@ -140,6 +140,8 @@ func TestLoaderRejectsTrailingJSONAndNegativeIdleTimeouts(t *testing.T) {
 		"negative host timeout":   `{"hosts":{"reyna":{"idleTimeout":"-1s"}}}`,
 		"invalid global loopback": `{"loopback":"sometimes-local"}`,
 		"invalid host loopback":   `{"hosts":{"reyna":{"loopback":"sometimes-local"}}}`,
+		"both global spellings":   `{"browserLoopback":"remote-only","loopback":"local-first"}`,
+		"both host spellings":     `{"hosts":{"reyna":{"browserLoopback":"remote-only","loopback":"local-first"}}}`,
 	} {
 		name, contents := name, contents
 		t.Run(name, func(t *testing.T) {
