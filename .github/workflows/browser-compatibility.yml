@@ -1,0 +1,37 @@
+name: Browser compatibility
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 9 * * 1"
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  full-browser-matrix:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install advertised browsers and certificate tooling
+        run: |
+          brew list --cask google-chrome >/dev/null 2>&1 || brew install --cask google-chrome
+          brew list --cask brave-browser >/dev/null 2>&1 || brew install --cask brave-browser
+          brew list --cask firefox >/dev/null 2>&1 || brew install --cask firefox
+          brew list --cask firefox@developer-edition >/dev/null 2>&1 || brew install --cask firefox@developer-edition
+          brew list --cask zen >/dev/null 2>&1 || brew install --cask zen
+          brew list --cask librewolf >/dev/null 2>&1 || brew install --cask librewolf
+          brew list --cask floorp >/dev/null 2>&1 || brew install --cask floorp
+          brew list --formula nss >/dev/null 2>&1 || brew install nss
+      - name: Gate advertised browser protocols
+        env:
+          KAMUI_BROWSER_TESTS: "1"
+          KAMUI_REQUIRED_BROWSERS: "chrome,brave,firefox,firefox-developer-edition,zen,librewolf,floorp"
+        run: go test -race ./integration -run 'TestInstalledBrowsersUseKamuiProxy|TestChrome' -count=1 -v

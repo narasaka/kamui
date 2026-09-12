@@ -151,15 +151,14 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 	}
 
 	geckoBrowsers := []struct {
-		id     string
-		path   string
-		prefix []string
+		id   string
+		path string
 	}{
-		{id: "firefox", path: "/Applications/Firefox.app/Contents/MacOS/firefox", prefix: []string{"-headless"}},
-		{id: "firefox-developer-edition", path: "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox", prefix: []string{"-headless"}},
-		{id: "zen", path: "/Applications/Zen.app/Contents/MacOS/zen", prefix: []string{"-headless"}},
+		{id: "firefox", path: "/Applications/Firefox.app/Contents/MacOS/firefox"},
+		{id: "firefox-developer-edition", path: "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox"},
+		{id: "zen", path: "/Applications/Zen.app/Contents/MacOS/zen"},
 		{id: "librewolf", path: "/Applications/LibreWolf.app/Contents/MacOS/librewolf"},
-		{id: "floorp", path: "/Applications/Floorp.app/Contents/MacOS/floorp", prefix: []string{"-headless"}},
+		{id: "floorp", path: "/Applications/Floorp.app/Contents/MacOS/floorp"},
 	}
 	for _, installed := range geckoBrowsers {
 		installed := installed
@@ -177,7 +176,7 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 				}
 				t.Skip("certutil is required to trust the disposable HTTPS certificate")
 			}
-			launcher := &browserTestLauncher{prefix: installed.prefix, reports: reports}
+			launcher := &browserTestLauncher{prefix: []string{"-headless"}, reports: reports}
 			adapter := browser.NewGeckoAdapter(installed.id, []string{installed.path}, launcher)
 			profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
 				Key: destination.Key(), Proxy: result.Session.Proxy,
