@@ -88,9 +88,10 @@ See [the CLI contract](docs/cli.md) and
 ## Localhost behavior and limitations
 
 Inside a Kamui development profile, `localhost`, names ending in `.localhost`,
-IPv4 `127.0.0.0/8`, and IPv6 `::1` refer to remote `127.0.0.1`. The original
-port is preserved. Those names cannot simultaneously reach genuine Mac
-loopback services from that profile.
+IPv4 `127.0.0.0/8`, and IPv6 `::1` refer to the remote loopback interface. The
+original port is preserved. Kamui tries remote `127.0.0.1` first and falls back
+to remote `::1`, allowing services bound to either address family. Those names
+cannot simultaneously reach genuine Mac loopback services from that profile.
 
 Only browser TCP traffic is covered. UDP and HTTP/3 are not transported, and
 Safari is not supported. Ordinary non-loopback browser destinations connect

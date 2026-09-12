@@ -86,6 +86,46 @@ func TestHTTPProxyRoutesLoopbackRemotelyAndOtherHostsDirectly(t *testing.T) {
 	}
 }
 
+func TestHTTPProxyReachesIPv6OnlyRemoteLoopback(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback is unavailable: %v", err)
+	}
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "IPv6 remote response")
+	}))
+	backend.Listener = listener
+	backend.Start()
+	t.Cleanup(backend.Close)
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	running, err := proxy.Start(context.Background(), proxy.Dialers{
+		Remote: (&net.Dialer{}).DialContext,
+		Direct: (&net.Dialer{}).DialContext,
+	}, proxy.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	proxyURL, _ := url.Parse("http://" + running.Addr().String())
+	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(proxyURL)}}
+
+	response, err := client.Get(fmt.Sprintf("http://localhost:%d", port))
+	if err != nil {
+		t.Fatalf("GET IPv6-only remote loopback: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || string(body) != "IPv6 remote response" {
+		t.Fatalf("status=%d body=%q, want 200 IPv6 remote response", response.StatusCode, body)
+	}
+}
+
 func TestProxyBindsRequestedLoopbackAddressAndRejectsOtherInterfaces(t *testing.T) {
 	t.Parallel()
 
@@ -215,5 +255,48 @@ func TestProxyTunnelsHTTPSWithoutTerminatingTLS(t *testing.T) {
 	}
 	if dialed != "127.0.0.1:3443" {
 		t.Fatalf("remote dial target = %q, want 127.0.0.1:3443", dialed)
+	}
+}
+
+func TestProxyTunnelsHTTPSToIPv6OnlyRemoteLoopback(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback is unavailable: %v", err)
+	}
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "secure IPv6 remote response")
+	}))
+	backend.Listener = listener
+	backend.StartTLS()
+	t.Cleanup(backend.Close)
+	port := listener.Addr().(*net.TCPAddr).Port
+
+	running, err := proxy.Start(context.Background(), proxy.Dialers{
+		Remote: (&net.Dialer{}).DialContext,
+		Direct: (&net.Dialer{}).DialContext,
+	}, proxy.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	proxyURL, _ := url.Parse("http://" + running.Addr().String())
+	client := &http.Client{Transport: &http.Transport{
+		Proxy:           http.ProxyURL(proxyURL),
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}}
+
+	response, err := client.Get(fmt.Sprintf("https://localhost:%d", port))
+	if err != nil {
+		t.Fatalf("GET HTTPS through IPv6-only remote loopback: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusOK || string(body) != "secure IPv6 remote response" {
+		t.Fatalf("status=%d body=%q, want 200 secure IPv6 remote response", response.StatusCode, body)
 	}
 }

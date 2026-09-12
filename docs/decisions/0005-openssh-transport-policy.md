@@ -31,4 +31,6 @@ The remote machine needs only a normal SSH server. Tailscale, OpenSSH
 multiplexing, and remote Kamui software are unnecessary. Existing streams fail
 when the child exits, while new requests fail quickly until reconnect succeeds.
 Remote IPv4, IPv6, and hostname loopback spellings are deliberately normalized
-to remote `127.0.0.1` for version 1.
+to a remote loopback connection. Kamui tries `127.0.0.1` first to preserve the
+established behavior, then falls back to `::1` so default development servers
+that bind only to IPv6 remain reachable without application-specific settings.
