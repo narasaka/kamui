@@ -210,26 +210,26 @@ func (h *handler) serveConnect(w http.ResponseWriter, request *http.Request) {
 
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		upstream.Close()
+		_ = upstream.Close()
 		http.Error(w, "Kamui proxy cannot create a TCP tunnel", http.StatusInternalServerError)
 		return
 	}
 	client, buffered, err := hijacker.Hijack()
 	if err != nil {
-		upstream.Close()
+		_ = upstream.Close()
 		return
 	}
 	if _, err := io.WriteString(client, "HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
-		client.Close()
-		upstream.Close()
+		_ = client.Close()
+		_ = upstream.Close()
 		return
 	}
 	go bridgeTunnel(client, buffered, upstream)
 }
 
 func bridgeTunnel(client net.Conn, buffered *bufio.ReadWriter, upstream net.Conn) {
-	defer client.Close()
-	defer upstream.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = upstream.Close() }()
 
 	done := make(chan struct{}, 2)
 	go func() {

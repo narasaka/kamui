@@ -51,7 +51,7 @@ func (c *Catalog) Select(ctx context.Context, selection Selection) (Selected, er
 	base := strings.ToLower(filepath.Base(selection.Explicit))
 	if explicit == "tor" || explicit == "tor-browser" || explicit == "tor browser" ||
 		base == "tor-browser" || base == "tor browser" || strings.Contains(explicit, "tor browser.app") {
-		return Selected{}, fmt.Errorf("Tor Browser is not supported because changing its routing would violate its privacy guarantees")
+		return Selected{}, fmt.Errorf("changing Tor Browser routing is unsupported because it would violate its privacy guarantees")
 	}
 	if filepath.IsAbs(selection.Explicit) {
 		return c.selectAbsolute(ctx, selection)

@@ -44,7 +44,7 @@ func TestInstalledBrowsersUseKamuiProxy(t *testing.T) {
 		index := index
 		httpServers[index] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Access-Control-Allow-Origin", "*")
-			fmt.Fprintf(w, "<html><body>remote-http-%d</body></html>", index)
+			_, _ = fmt.Fprintf(w, "<html><body>remote-http-%d</body></html>", index)
 		}))
 		defer httpServers[index].Close()
 	}
@@ -78,7 +78,7 @@ func TestInstalledBrowsersUseKamuiProxy(t *testing.T) {
 		httpPorts = append(httpPorts, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
 	}
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, `<html><body>waiting<script type="module">
+		_, _ = fmt.Fprintf(w, `<html><body>waiting<script type="module">
 const socketResult=(target)=>new Promise((resolve,reject)=>{const socket=new WebSocket(target);socket.onmessage=(event)=>resolve(event.data);socket.onerror=reject;});
 const inspect=(name,promise)=>Promise.race([
   promise.then(value=>name+"="+value).catch(error=>name+"=ERROR:"+error),
@@ -100,7 +100,7 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 	defer page.Close()
 
 	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
-	defer manager.Close()
+	t.Cleanup(func() { _ = manager.Close() })
 	destination, _ := session.ParseDestination("browser-gate")
 	result, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
 	if err != nil {
@@ -214,7 +214,7 @@ func TestChromeReconnectsWebSocketAfterRemoteServerRestart(t *testing.T) {
 	wsPort := strings.TrimPrefix(webSocketURL, "ws://127.0.0.1:")
 	reportPort := strings.TrimPrefix(reportServer.URL, "http://127.0.0.1:")
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, `<script type="module">
+		_, _ = fmt.Fprintf(w, `<script type="module">
 const once=()=>new Promise((resolve,reject)=>{const socket=new WebSocket("ws://localhost:%s");socket.onmessage=e=>resolve(e.data);socket.onerror=reject;});
 const first=await once();
 await new Promise(resolve=>setTimeout(resolve, 700));
@@ -226,7 +226,7 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(first+"|"+sec
 	defer page.Close()
 
 	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
-	defer manager.Close()
+	t.Cleanup(func() { _ = manager.Close() })
 	destination, _ := session.ParseDestination("browser-hmr-gate")
 	result, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
 	if err != nil {
@@ -263,12 +263,12 @@ func TestChromeUsesSeveralRemoteLoopbackTabsSimultaneously(t *testing.T) {
 		index := index
 		servers[index] = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			hits <- fmt.Sprintf("tab-%d", index)
-			fmt.Fprintf(w, "tab-%d", index)
+			_, _ = fmt.Fprintf(w, "tab-%d", index)
 		}))
 		defer servers[index].Close()
 	}
 	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
-	defer manager.Close()
+	t.Cleanup(func() { _ = manager.Close() })
 	destination, _ := session.ParseDestination("browser-tabs-gate")
 	result, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
 	if err != nil {
@@ -336,7 +336,7 @@ func (l *chromeTabsLauncher) Launch(ctx context.Context, path string, args []str
 		if err != nil {
 			return fmt.Errorf("open Chrome tab: %w", err)
 		}
-		response.Body.Close()
+		_ = response.Body.Close()
 		if response.StatusCode != http.StatusOK {
 			return fmt.Errorf("open Chrome tab returned %s", response.Status)
 		}
@@ -543,8 +543,8 @@ func serveBrowserWebSocket(w http.ResponseWriter, request *http.Request, message
 	if err != nil {
 		return
 	}
-	defer connection.Close()
-	fmt.Fprintf(connection, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(digest[:]))
+	defer func() { _ = connection.Close() }()
+	_, _ = fmt.Fprintf(connection, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", base64.StdEncoding.EncodeToString(digest[:]))
 	frame := []byte{0x81, byte(len(message))}
 	frame = append(frame, message...)
 	_, _ = connection.Write(frame)

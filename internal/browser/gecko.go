@@ -35,13 +35,13 @@ user_pref("network.proxy.allow_hijacking_localhost", true);
 		return Profile{}, fmt.Errorf("create temporary user.js: %w", err)
 	}
 	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
+	defer func() { _ = os.Remove(temporaryPath) }()
 	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return Profile{}, fmt.Errorf("protect temporary user.js: %w", err)
 	}
 	if _, err := temporary.WriteString(preferences); err != nil {
-		temporary.Close()
+		_ = temporary.Close()
 		return Profile{}, fmt.Errorf("write user.js: %w", err)
 	}
 	if err := temporary.Close(); err != nil {

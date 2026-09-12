@@ -90,7 +90,7 @@ func TestManagerKeepsInitialLoopbackModeWhenReusingSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -112,7 +112,7 @@ func TestManagerReusesPersistedProxyAddressAfterRestart(t *testing.T) {
 		})
 		result, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
 		if err != nil {
-			manager.Close()
+			_ = manager.Close()
 			t.Fatal(err)
 		}
 		return manager, result.Session.Proxy

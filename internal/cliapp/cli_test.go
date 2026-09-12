@@ -164,7 +164,7 @@ func TestPrimaryCommandEnablesLocalFirstLoopbackRouting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GET Mac loopback through CLI-configured proxy: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	body, err := io.ReadAll(response.Body)
 	if err != nil {
 		t.Fatal(err)
@@ -384,7 +384,7 @@ func TestStopWithoutDestinationReportsWhenNoSessionsExist(t *testing.T) {
 	var output bytes.Buffer
 	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
 	err := command.Run(context.Background(), []string{"kamui", "stop"})
-	if got, want := fmt.Sprint(err), "No sessions to stop."; got != want {
+	if got, want := fmt.Sprint(err), "no sessions to stop"; got != want {
 		t.Fatalf("stop error = %q, want %q", got, want)
 	}
 }

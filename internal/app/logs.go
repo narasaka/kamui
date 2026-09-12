@@ -38,7 +38,7 @@ func (a *Application) StreamLogs(ctx context.Context, writer io.Writer, follow b
 	if err != nil {
 		return fmt.Errorf("open OpenSSH log: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	offset, err := lastLinesOffset(file, lines)
 	if err != nil {

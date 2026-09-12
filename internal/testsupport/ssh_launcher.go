@@ -93,7 +93,7 @@ func (p *SSHProcess) accept() {
 }
 
 func serveSOCKS(client net.Conn) {
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	greeting := make([]byte, 3)
 	if _, err := io.ReadFull(client, greeting); err != nil {
 		return
@@ -119,7 +119,7 @@ func serveSOCKS(client net.Conn) {
 		_, _ = client.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})
 		return
 	}
-	defer remote.Close()
+	defer func() { _ = remote.Close() }()
 	if _, err := client.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
 		return
 	}

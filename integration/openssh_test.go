@@ -73,7 +73,7 @@ func TestColdStartWithDisposableOpenSSHServer(t *testing.T) {
 				t.Fatalf("request through OpenSSH: %v", err)
 			}
 			body, _ := io.ReadAll(response.Body)
-			response.Body.Close()
+			_ = response.Body.Close()
 			if string(body) != "through real OpenSSH" {
 				t.Fatalf("body = %q", body)
 			}
@@ -101,7 +101,7 @@ func TestRemoteListenerDiscoveryWithDisposableOpenSSHServer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer listener.Close()
+	t.Cleanup(func() { _ = listener.Close() })
 	want := uint16(listener.Addr().(*net.TCPAddr).Port)
 
 	ports, err := (mirror.SSHDiscoverer{SSHPath: wrapper}).ListeningPorts(context.Background(), "kamui-discovery-alias")
@@ -124,7 +124,7 @@ func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(testHome) })
 	configRoot := filepath.Join(testHome, ".config")
-	stateRoot := filepath.Join(configRoot, "kamui")
+	var stateRoot string
 	hookEnvironment := fmt.Sprintf("HOME=%q XDG_CONFIG_HOME=%q", testHome, configRoot)
 	var layout state.Layout
 	if runtime.GOOS == "darwin" {
@@ -401,7 +401,7 @@ func waitForListener(t *testing.T, address string, log *openSSHLogBuffer) {
 	for time.Now().Before(deadline) {
 		connection, err := net.DialTimeout("tcp", address, 50*time.Millisecond)
 		if err == nil {
-			connection.Close()
+			_ = connection.Close()
 			return
 		}
 		time.Sleep(20 * time.Millisecond)

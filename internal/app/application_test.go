@@ -71,7 +71,7 @@ func TestStreamLogsFollowsOpenSSHDiagnosticsUntilCancelled(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := file.WriteString("new channel error\n"); err != nil {
-		file.Close()
+		_ = file.Close()
 		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
@@ -358,13 +358,13 @@ func TestV004ControllerHelperProcess(t *testing.T) {
 	if err != nil || syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB) != nil {
 		os.Exit(2)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
 	_ = os.Remove(layout.Socket)
 	listener, err := net.Listen("unix", layout.Socket)
 	if err != nil {
 		os.Exit(2)
 	}
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 	const token = "v004-authenticated-token"
 	if err := os.WriteFile(layout.Token, []byte(token), 0o600); err != nil {
 		os.Exit(2)

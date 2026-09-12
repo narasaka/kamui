@@ -53,12 +53,12 @@ func runController(arguments []string) error {
 	if err != nil {
 		return fmt.Errorf("open controller log: %w", err)
 	}
-	defer logFile.Close()
+	defer func() { _ = logFile.Close() }()
 	sshLogFile, err := os.OpenFile(layout.SSHLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open OpenSSH log: %w", err)
 	}
-	defer sshLogFile.Close()
+	defer func() { _ = sshLogFile.Close() }()
 	manager := session.NewManagerWithOptions(session.ManagerOptions{
 		Transport: ssh.Transport{
 			Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, BackgroundStderr: sshLogFile,
@@ -69,7 +69,7 @@ func runController(arguments []string) error {
 		Logger:         slog.New(slog.NewJSONHandler(logFile, nil)),
 		ProxyAddresses: layout,
 	})
-	defer manager.Close()
+	defer func() { _ = manager.Close() }()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	server, err := controller.Start(ctx, layout, manager)

@@ -186,7 +186,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 						return fmt.Errorf("list sessions available to stop: %w", err)
 					}
 					if len(result.Sessions) == 0 {
-						return fmt.Errorf("No sessions to stop.")
+						return fmt.Errorf("no sessions to stop")
 					}
 					var message strings.Builder
 					message.WriteString("Choose a session to stop:\n")
