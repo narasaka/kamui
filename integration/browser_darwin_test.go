@@ -86,9 +86,9 @@ func TestInstalledBrowsersUseKamuiProxy(t *testing.T) {
 const socketResult=(target)=>new Promise((resolve,reject)=>{const socket=new WebSocket(target);socket.onmessage=(event)=>resolve(event.data);socket.onerror=reject;});
 const values=await Promise.all([
   fetch("http://localhost:%s").then(r=>r.text()),
-  fetch("http://localhost:%s").then(r=>r.text()),
-  fetch("http://localhost:%s").then(r=>r.text()),
-  fetch("http://localhost:%s").then(r=>r.text()),
+  fetch("http://app.localhost:%s").then(r=>r.text()),
+  fetch("http://127.42.0.1:%s").then(r=>r.text()),
+  fetch("http://[::1]:%s").then(r=>r.text()),
   fetch("https://localhost:%s").then(r=>r.text()),
   socketResult("ws://localhost:%s"),
   socketResult("wss://localhost:%s"),
@@ -119,7 +119,7 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 		installed := installed
 		t.Run(installed.id, func(t *testing.T) {
 			if _, err := os.Stat(installed.path); err != nil {
-				if os.Getenv("KAMUI_REQUIRE_ALL_BROWSERS") == "1" {
+				if requiredBrowser(installed.id) {
 					t.Fatalf("required %s browser is not installed at %s", installed.id, installed.path)
 				}
 				t.Skipf("%s is not installed", installed.id)
@@ -147,40 +147,61 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 		})
 	}
 
-	t.Run("firefox", func(t *testing.T) {
-		const path = "/Applications/Firefox.app/Contents/MacOS/firefox"
-		if _, err := os.Stat(path); err != nil {
-			if os.Getenv("KAMUI_REQUIRE_ALL_BROWSERS") == "1" {
-				t.Fatalf("required Firefox browser is not installed at %s", path)
+	geckoBrowsers := []struct {
+		id   string
+		path string
+	}{
+		{id: "firefox", path: "/Applications/Firefox.app/Contents/MacOS/firefox"},
+		{id: "firefox-developer-edition", path: "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox"},
+		{id: "zen", path: "/Applications/Zen.app/Contents/MacOS/zen"},
+		{id: "librewolf", path: "/Applications/LibreWolf.app/Contents/MacOS/librewolf"},
+		{id: "floorp", path: "/Applications/Floorp.app/Contents/MacOS/floorp"},
+	}
+	for _, installed := range geckoBrowsers {
+		installed := installed
+		t.Run(installed.id, func(t *testing.T) {
+			if _, err := os.Stat(installed.path); err != nil {
+				if requiredBrowser(installed.id) {
+					t.Fatalf("required %s browser is not installed at %s", installed.id, installed.path)
+				}
+				t.Skipf("%s is not installed", installed.id)
 			}
-			t.Skip("Firefox is not installed")
-		}
-		certutil, err := exec.LookPath("certutil")
-		if err != nil {
-			if os.Getenv("KAMUI_REQUIRE_ALL_BROWSERS") == "1" {
-				t.Fatal("certutil is required for the Firefox release gate")
+			certutil, err := exec.LookPath("certutil")
+			if err != nil {
+				if requiredBrowser(installed.id) {
+					t.Fatalf("certutil is required for the %s release gate", installed.id)
+				}
+				t.Skip("certutil is required to trust the disposable HTTPS certificate")
 			}
-			t.Skip("certutil is required to trust the disposable HTTPS certificate")
+			launcher := &headlessLauncher{prefix: []string{"-headless"}, reports: reports}
+			adapter := browser.NewGeckoAdapter(installed.id, []string{installed.path}, launcher)
+			profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
+				Key: destination.Key(), Proxy: result.Session.Proxy,
+				ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
+			}, browser.Installation{ID: installed.id, Executable: installed.path})
+			if err != nil {
+				t.Fatal(err)
+			}
+			installBrowserTestCA(t, certutil, profile.Path, caCertificate)
+			pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
+			launcher.want = []string{
+				"remote-http-0", "remote-http-1", "remote-http-2", "remote-http-3",
+				"remote-https", "ws-ok", "wss-ok", "mac-direct",
+			}
+			if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
+				t.Fatalf("browser protocol gate: %v", err)
+			}
+		})
+	}
+}
+
+func requiredBrowser(id string) bool {
+	for _, required := range strings.Split(os.Getenv("KAMUI_REQUIRED_BROWSERS"), ",") {
+		if strings.TrimSpace(required) == id {
+			return true
 		}
-		launcher := &headlessLauncher{prefix: []string{"-headless"}, reports: reports}
-		adapter := browser.NewGeckoAdapter("firefox", []string{path}, launcher)
-		profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
-			Key: destination.Key(), Proxy: result.Session.Proxy,
-			ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
-		}, browser.Installation{ID: "firefox", Executable: path})
-		if err != nil {
-			t.Fatal(err)
-		}
-		installBrowserTestCA(t, certutil, profile.Path, caCertificate)
-		pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
-		launcher.want = []string{
-			"remote-http-0", "remote-http-1", "remote-http-2", "remote-http-3",
-			"remote-https", "ws-ok", "wss-ok", "mac-direct",
-		}
-		if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
-			t.Fatalf("browser protocol gate: %v", err)
-		}
-	})
+	}
+	return false
 }
 
 type headlessLauncher struct {

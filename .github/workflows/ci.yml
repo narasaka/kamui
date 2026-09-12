@@ -43,9 +43,13 @@ jobs:
           brew list --cask google-chrome >/dev/null 2>&1 || brew install --cask google-chrome
           brew list --cask brave-browser >/dev/null 2>&1 || brew install --cask brave-browser
           brew list --cask firefox >/dev/null 2>&1 || brew install --cask firefox
+          brew list --cask firefox@developer-edition >/dev/null 2>&1 || brew install --cask firefox@developer-edition
+          brew list --cask zen >/dev/null 2>&1 || brew install --cask zen
+          brew list --cask librewolf >/dev/null 2>&1 || brew install --cask librewolf
+          brew list --cask floorp >/dev/null 2>&1 || brew install --cask floorp
           brew list --formula nss >/dev/null 2>&1 || brew install nss
-      - name: Gate Chrome, Brave, and Firefox protocols
+      - name: Gate advertised browser protocols
         env:
           KAMUI_BROWSER_TESTS: "1"
-          KAMUI_REQUIRE_ALL_BROWSERS: "1"
+          KAMUI_REQUIRED_BROWSERS: "chrome,brave,firefox,firefox-developer-edition,zen,librewolf,floorp"
         run: go test -race ./integration -run TestInstalledBrowsersUseKamuiProxy -count=1 -v
