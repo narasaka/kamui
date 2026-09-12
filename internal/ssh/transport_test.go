@@ -72,6 +72,19 @@ func TestTransportRetriesWhenSOCKSPortLosesBindRace(t *testing.T) {
 	}
 }
 
+func TestConnectionCloseTreatsKilledChildExitAsSuccessfulCleanup(t *testing.T) {
+	t.Parallel()
+
+	launcher := &readyLauncher{waitErr: errors.New("signal: killed")}
+	connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).Connect(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := connection.Close(); err != nil {
+		t.Fatalf("Close returned expected killed-child exit: %v", err)
+	}
+}
+
 func TestUnattendedReconnectDisablesAuthenticationPrompts(t *testing.T) {
 	t.Parallel()
 
@@ -167,6 +180,7 @@ func TestConnectionReturnsSOCKSFailureCode(t *testing.T) {
 type readyLauncher struct {
 	request ssh.StartRequest
 	address string
+	waitErr error
 }
 
 func (l *readyLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
@@ -181,7 +195,7 @@ func (l *readyLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
 	if err != nil {
 		return nil, err
 	}
-	process := &listeningProcess{listener: listener, done: make(chan struct{})}
+	process := &listeningProcess{listener: listener, done: make(chan struct{}), waitErr: l.waitErr}
 	go func() {
 		for {
 			connection, err := listener.Accept()
@@ -197,6 +211,7 @@ func (l *readyLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
 type listeningProcess struct {
 	listener net.Listener
 	done     chan struct{}
+	waitErr  error
 }
 
 type socksLauncher struct {
@@ -289,7 +304,7 @@ func (l *socksLauncher) target() string {
 
 func (p *listeningProcess) Wait() error {
 	<-p.done
-	return nil
+	return p.waitErr
 }
 
 func (p *listeningProcess) Signal(os.Signal) error {

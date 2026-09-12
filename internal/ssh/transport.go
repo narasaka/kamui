@@ -4,6 +4,7 @@ package ssh
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -253,6 +254,7 @@ type Connection struct {
 	state     atomic.Uint32
 	done      chan struct{}
 	closeOnce sync.Once
+	closeErr  error
 	errMu     sync.RWMutex
 	err       error
 }
@@ -279,10 +281,12 @@ func (c *Connection) Snapshot() Snapshot {
 // Close kills and reaps the OpenSSH child.
 func (c *Connection) Close() error {
 	c.closeOnce.Do(func() {
-		_ = c.process.Kill()
+		if err := c.process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			c.closeErr = err
+		}
 		<-c.done
 	})
-	return c.exitError()
+	return c.closeErr
 }
 
 func (c *Connection) exitError() error {
