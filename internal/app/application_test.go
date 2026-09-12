@@ -203,6 +203,10 @@ func TestApplicationRestartsStaleControllerAndRetriesEnsure(t *testing.T) {
 	if identity.Build != version.BuildIdentity() {
 		t.Fatalf("replacement build = %q, want %q", identity.Build, version.BuildIdentity())
 	}
+	logContents, err := os.ReadFile(layout.ControlLog)
+	if err != nil || !strings.Contains(string(logContents), "controller_upgrade_restart") {
+		t.Fatalf("controller log = %q, error=%v; want upgrade diagnostic", logContents, err)
+	}
 	select {
 	case <-stale.Done():
 	default:

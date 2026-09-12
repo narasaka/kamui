@@ -68,6 +68,8 @@ type Application struct {
 	identity controller.Identity
 }
 
+const controllerTransitionTimeout = 15 * time.Second
+
 // New creates a command gateway for one user state root.
 func New(layout state.Layout, starter Starter) *Application {
 	return NewWithBrowsers(layout, starter, browser.NewCatalog(browser.DefaultAdapters(nil)))
@@ -182,9 +184,7 @@ func (a *Application) ensureCompatibleController(ctx context.Context) error {
 	}
 
 	if err == nil {
-		if logErr := a.logControllerRestart(identity); logErr != nil {
-			return logErr
-		}
+		_ = a.logControllerRestart(identity)
 		if identity.Legacy {
 			err = a.client.ShutdownLegacy(ctx, identity)
 		} else {
@@ -232,7 +232,7 @@ func identitiesMatch(got, want controller.Identity) bool {
 func (a *Application) waitForController(ctx context.Context, ready bool) (controller.Identity, error) {
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.NewTimer(5 * time.Second)
+	deadline := time.NewTimer(controllerTransitionTimeout)
 	defer deadline.Stop()
 	var lastErr error
 	for {
@@ -255,7 +255,10 @@ func (a *Application) waitForController(ctx context.Context, ready bool) (contro
 			if ready {
 				state = "become ready"
 			}
-			return controller.Identity{}, fmt.Errorf("Kamui controller did not %s after upgrade: %w", state, lastErr)
+			if lastErr != nil {
+				return controller.Identity{}, fmt.Errorf("Kamui controller did not %s after upgrade: %w", state, lastErr)
+			}
+			return controller.Identity{}, fmt.Errorf("Kamui controller did not %s after upgrade within %s", state, controllerTransitionTimeout)
 		case <-ticker.C:
 		}
 	}
