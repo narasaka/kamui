@@ -89,24 +89,7 @@ func (l Layout) RememberBrowser(destination session.Destination, browserID strin
 	if err := l.Ensure(); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(l.State, "browser-*")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer os.Remove(temporaryPath)
-	if err := temporary.Chmod(0o600); err != nil {
-		temporary.Close()
-		return err
-	}
-	if _, err := temporary.WriteString(browserID + "\n"); err != nil {
-		temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, l.browserPreference(destination))
+	return writeUserFile(l.State, "browser-*", l.browserPreference(destination), browserID+"\n")
 }
 
 // PreviousBrowser reads the last successful browser ID, or returns an empty ID
@@ -135,7 +118,11 @@ func (l Layout) RememberProxy(destination session.Destination, address netip.Add
 	if err := l.Ensure(); err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(l.State, "proxy-*")
+	return writeUserFile(l.State, "proxy-*", l.proxyPreference(destination), address.String()+"\n")
+}
+
+func writeUserFile(directory, pattern, target, contents string) error {
+	temporary, err := os.CreateTemp(directory, pattern)
 	if err != nil {
 		return err
 	}
@@ -145,14 +132,14 @@ func (l Layout) RememberProxy(destination session.Destination, address netip.Add
 		temporary.Close()
 		return err
 	}
-	if _, err := temporary.WriteString(address.String() + "\n"); err != nil {
+	if _, err := temporary.WriteString(contents); err != nil {
 		temporary.Close()
 		return err
 	}
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, l.proxyPreference(destination))
+	return os.Rename(temporaryPath, target)
 }
 
 // PreviousProxy returns the last loopback proxy address for a destination.
