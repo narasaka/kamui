@@ -1,0 +1,161 @@
+// Package app is the presentation-neutral command gateway for Kamui.
+package app
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"strings"
+	"time"
+
+	"github.com/narasaka/kamui/internal/browser"
+	"github.com/narasaka/kamui/internal/controller"
+	"github.com/narasaka/kamui/internal/session"
+	"github.com/narasaka/kamui/internal/state"
+)
+
+// Operation is a user-visible Kamui command.
+type Operation uint8
+
+const (
+	Ensure Operation = iota
+	Status
+	Stop
+	Open
+	Doctor
+	Browsers
+	SSHHook
+	PrintSSHConfig
+)
+
+// Request contains presentation-neutral command values.
+type Request struct {
+	Operation   Operation
+	Destination string
+	Browser     browser.Selection
+	URLs        []string
+	All         bool
+	JSON        bool
+	Verbose     bool
+}
+
+// Result is the observable command result.
+type Result struct {
+	session.Result
+	Output string
+}
+
+// Starter starts the absent controller at the operating-system process seam.
+type Starter interface {
+	Start(context.Context, state.Layout) error
+}
+
+// Application starts or contacts the controller and executes commands.
+type Application struct {
+	layout  state.Layout
+	client  controller.Client
+	starter Starter
+}
+
+// New creates a command gateway for one user state root.
+func New(layout state.Layout, starter Starter) *Application {
+	if starter == nil {
+		starter = ProcessStarter{}
+	}
+	return &Application{layout: layout, client: controller.Client{Layout: layout}, starter: starter}
+}
+
+// Execute applies one user command.
+func (a *Application) Execute(ctx context.Context, request Request) (Result, error) {
+	destination, err := session.ParseDestination(request.Destination)
+	if err != nil {
+		return Result{}, err
+	}
+	operation, err := sessionOperation(request.Operation)
+	if err != nil {
+		return Result{}, err
+	}
+	command := session.Command{
+		Operation: operation, Destination: destination, Browser: request.Browser, URLs: request.URLs,
+	}
+	result, err := a.client.Execute(ctx, command)
+	if err == nil {
+		return Result{Result: result}, nil
+	}
+	if !controllerUnavailable(err) {
+		return Result{}, err
+	}
+	if err := a.starter.Start(ctx, a.layout); err != nil && !strings.Contains(err.Error(), "another Kamui controller") {
+		return Result{}, fmt.Errorf("start Kamui controller: %w", err)
+	}
+
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for {
+		result, err = a.client.Execute(ctx, command)
+		if err == nil {
+			return Result{Result: result}, nil
+		}
+		if !controllerUnavailable(err) {
+			return Result{}, err
+		}
+		select {
+		case <-ctx.Done():
+			return Result{}, ctx.Err()
+		case <-deadline.C:
+			return Result{}, fmt.Errorf("Kamui controller did not become ready: %w", err)
+		case <-ticker.C:
+		}
+	}
+}
+
+func sessionOperation(operation Operation) (session.Operation, error) {
+	switch operation {
+	case Ensure, SSHHook:
+		return session.Ensure, nil
+	case Status:
+		return session.Status, nil
+	case Stop:
+		return session.Stop, nil
+	case Open:
+		return session.Open, nil
+	default:
+		return 0, fmt.Errorf("operation %d does not use a host session", operation)
+	}
+}
+
+func controllerUnavailable(err error) bool {
+	text := err.Error()
+	return strings.Contains(text, "read controller token") || strings.Contains(text, "contact Kamui controller")
+}
+
+// ProcessStarter starts the hidden controller command using the current binary.
+type ProcessStarter struct {
+	Executable string
+	Stdin      io.Reader
+	Stdout     io.Writer
+	Stderr     io.Writer
+}
+
+func (s ProcessStarter) Start(_ context.Context, layout state.Layout) error {
+	executable := s.Executable
+	if executable == "" {
+		var err error
+		executable, err = os.Executable()
+		if err != nil {
+			return err
+		}
+	}
+	command := exec.Command(executable, "__controller", "--state-root", layout.Root)
+	command.Stdin = s.Stdin
+	command.Stdout = s.Stdout
+	command.Stderr = s.Stderr
+	if err := command.Start(); err != nil {
+		return err
+	}
+	return command.Process.Release()
+}

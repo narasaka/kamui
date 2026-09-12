@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 
+	kamuiapp "github.com/narasaka/kamui/internal/app"
+	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/session"
 	cli "github.com/urfave/cli/v3"
 )
@@ -19,6 +21,11 @@ type Streams struct {
 
 // NewCommand returns Kamui's complete command grammar.
 func NewCommand(streams Streams) *cli.Command {
+	return NewCommandWithApplication(nil, streams)
+}
+
+// NewCommandWithApplication returns the command grammar wired to Kamui.
+func NewCommandWithApplication(application *kamuiapp.Application, streams Streams) *cli.Command {
 	command := &cli.Command{
 		Name:      "kamui",
 		Usage:     "use a remote SSH host's loopback services in a development browser",
@@ -30,7 +37,28 @@ func NewCommand(streams Streams) *cli.Command {
 			&cli.StringFlag{Name: "browser"},
 			&cli.StringFlag{Name: "browser-family"},
 		},
-		Action: destinationAction("ensure", exactlyOneDestination),
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			if err := exactlyOneDestination(cmd); err != nil {
+				return err
+			}
+			destination, err := session.ParseDestination(cmd.Args().First())
+			if err != nil {
+				return err
+			}
+			if application == nil {
+				return notImplemented("ensure")
+			}
+			result, err := application.Execute(ctx, kamuiapp.Request{
+				Operation:   kamuiapp.Ensure,
+				Destination: destination.String(),
+				Browser:     browser.Selection{Explicit: cmd.String("browser"), Family: cmd.String("browser-family")},
+			})
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(streams.Out, "%s connected; proxy %s; browser %s\n", destination, result.Session.Proxy, result.Session.Browser)
+			return err
+		},
 	}
 
 	command.Commands = []*cli.Command{
@@ -38,13 +66,25 @@ func NewCommand(streams Streams) *cli.Command {
 			Name:      "status",
 			ArgsUsage: "[SSH_DESTINATION]",
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "verbose"}},
-			Action:    notImplementedAction("status", atMostOneDestination),
+			Action: func(ctx context.Context, cmd *cli.Command) error {
+				if err := atMostOneDestination(cmd); err != nil {
+					return err
+				}
+				if application == nil {
+					return notImplemented("status")
+				}
+				result, err := application.Execute(ctx, kamuiapp.Request{Operation: kamuiapp.Status, Destination: cmd.Args().First()})
+				if err != nil {
+					return err
+				}
+				return printStatus(streams.Out, result.Session)
+			},
 		},
 		{
 			Name:      "stop",
 			ArgsUsage: "SSH_DESTINATION",
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "all"}},
-			Action: func(_ context.Context, cmd *cli.Command) error {
+			Action: func(ctx context.Context, cmd *cli.Command) error {
 				if cmd.Bool("all") {
 					if cmd.NArg() != 0 {
 						return fmt.Errorf("stop accepts either SSH_DESTINATION or --all, not both")
@@ -54,20 +94,30 @@ func NewCommand(streams Streams) *cli.Command {
 				if err := exactlyOneDestination(cmd); err != nil {
 					return err
 				}
-				return notImplemented("stop")
+				if application == nil {
+					return notImplemented("stop")
+				}
+				_, err := application.Execute(ctx, kamuiapp.Request{Operation: kamuiapp.Stop, Destination: cmd.Args().First()})
+				return err
 			},
 		},
 		{
 			Name:      "open",
 			ArgsUsage: "SSH_DESTINATION [URL ...]",
-			Action: func(_ context.Context, cmd *cli.Command) error {
+			Action: func(ctx context.Context, cmd *cli.Command) error {
 				if cmd.NArg() < 1 {
 					return fmt.Errorf("open requires SSH_DESTINATION")
 				}
 				if _, err := session.ParseDestination(cmd.Args().First()); err != nil {
 					return err
 				}
-				return notImplemented("open")
+				if application == nil {
+					return notImplemented("open")
+				}
+				_, err := application.Execute(ctx, kamuiapp.Request{
+					Operation: kamuiapp.Open, Destination: cmd.Args().First(), URLs: cmd.Args().Slice()[1:],
+				})
+				return err
 			},
 		},
 		{
@@ -91,6 +141,25 @@ func NewCommand(streams Streams) *cli.Command {
 	}
 
 	return command
+}
+
+func printStatus(writer io.Writer, status session.SessionStatus) error {
+	_, err := fmt.Fprintf(writer, "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\n%s\t%s\t%s\t%s\t%s\n",
+		status.Destination, sessionState(status.State), status.Browser, status.Proxy, sessionState(status.State))
+	return err
+}
+
+func sessionState(state session.SessionState) string {
+	switch state {
+	case session.SessionConnected:
+		return "connected"
+	case session.SessionConnecting:
+		return "connecting"
+	case session.SessionAuthenticationRequired:
+		return "authentication-required"
+	default:
+		return "unavailable"
+	}
 }
 
 type argumentValidator func(*cli.Command) error
