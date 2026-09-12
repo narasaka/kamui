@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"time"
 
@@ -66,6 +67,12 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 		if err := decoder.Decode(&file); err != nil {
 			return Effective{}, fmt.Errorf("decode configuration: %w", err)
 		}
+		if err := decoder.Decode(&struct{}{}); err != io.EOF {
+			if err == nil {
+				err = fmt.Errorf("multiple JSON values")
+			}
+			return Effective{}, fmt.Errorf("decode configuration: trailing content: %w", err)
+		}
 	}
 
 	effective := Effective{
@@ -81,6 +88,9 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 		effective.IdleTimeout, err = time.ParseDuration(file.IdleTimeout)
 		if err != nil {
 			return Effective{}, fmt.Errorf("parse global idleTimeout: %w", err)
+		}
+		if effective.IdleTimeout < 0 {
+			return Effective{}, fmt.Errorf("global idleTimeout must not be negative")
 		}
 	}
 
@@ -99,6 +109,9 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 			if err != nil {
 				return Effective{}, fmt.Errorf("parse idleTimeout for %s: %w", destination, err)
 			}
+			if effective.IdleTimeout < 0 {
+				return Effective{}, fmt.Errorf("idleTimeout for %s must not be negative", destination)
+			}
 		}
 	}
 
@@ -109,6 +122,9 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 		effective.OpenBrowserOnSSH = *overrides.OpenBrowserOnSSH
 	}
 	if overrides.IdleTimeout != nil {
+		if *overrides.IdleTimeout < 0 {
+			return Effective{}, fmt.Errorf("idleTimeout override must not be negative")
+		}
 		effective.IdleTimeout = *overrides.IdleTimeout
 	}
 	if overrides.StopBrowserOnStop != nil {

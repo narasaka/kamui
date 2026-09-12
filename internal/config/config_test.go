@@ -71,3 +71,26 @@ func TestLoaderRejectsUnknownConfigurationFields(t *testing.T) {
 		t.Fatal("Resolve succeeded with an unknown field, want an error")
 	}
 }
+
+func TestLoaderRejectsTrailingJSONAndNegativeIdleTimeouts(t *testing.T) {
+	t.Parallel()
+
+	destination, _ := session.ParseDestination("reyna")
+	for name, contents := range map[string]string{
+		"trailing document":       `{} {}`,
+		"negative global timeout": `{"idleTimeout":"-1s"}`,
+		"negative host timeout":   `{"hosts":{"reyna":{"idleTimeout":"-1s"}}}`,
+	} {
+		name, contents := name, contents
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (config.Loader{Path: path}).Resolve(context.Background(), destination, config.Overrides{}); err == nil {
+				t.Fatalf("Resolve accepted %s", contents)
+			}
+		})
+	}
+}
