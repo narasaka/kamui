@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -54,6 +55,25 @@ func TestTransportStartsSafeOpenSSHAndWaitsForSOCKSReadiness(t *testing.T) {
 	}
 	if connection.Snapshot().State != ssh.Connected {
 		t.Fatalf("connection state = %v, want connected", connection.Snapshot().State)
+	}
+}
+
+func TestTransportFindsOpenSSHOnPathWhenNoExecutableIsConfigured(t *testing.T) {
+	root := t.TempDir()
+	sshPath := filepath.Join(root, "ssh")
+	if err := os.WriteFile(sshPath, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", root)
+
+	launcher := &readyLauncher{}
+	connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).Connect(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	if launcher.request.Path != sshPath {
+		t.Fatalf("OpenSSH executable = %q, want PATH result %q", launcher.request.Path, sshPath)
 	}
 }
 

@@ -40,6 +40,6 @@ The proxy handles plain WebSocket Upgrade as HTTP and secure WebSocket as a TLS
 ## Consequences
 
 The user's regular profile and application bundle remain unchanged. The Kamui
-profile deliberately loses access to genuine Mac loopback services through the
+profile deliberately loses access to genuine local loopback services through the
 covered host forms. Fork executable names and profile-lock behavior still need
 repeatable tests on each installed fork before release support is claimed.

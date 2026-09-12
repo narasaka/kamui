@@ -343,7 +343,7 @@ func (s ProcessStarter) Start(_ context.Context, layout state.Layout) error {
 			return err
 		}
 	}
-	command := exec.Command(executable, "__controller", "--state-root", layout.Root)
+	command := exec.Command(executable, "__controller", "--state-root", layout.Root, "--runtime-root", layout.Runtime)
 	command.Stdin = s.Stdin
 	command.Stdout = s.Stdout
 	command.Stderr = s.Stderr

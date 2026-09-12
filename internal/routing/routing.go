@@ -15,7 +15,7 @@ import (
 type Kind uint8
 
 const (
-	// Direct connects from the Mac.
+	// Direct connects from the local machine.
 	Direct Kind = iota
 	// RemoteLoopback connects through SSH to the remote loopback interface.
 	RemoteLoopback

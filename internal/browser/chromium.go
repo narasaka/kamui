@@ -6,25 +6,12 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"sync"
 )
 
 type chromiumAdapter struct {
 	adapterBase
-}
-
-// DefaultChromiumAdapters returns Chromium-family adapters in deterministic
-// preference order.
-func DefaultChromiumAdapters(launcher Launcher) []Adapter {
-	return []Adapter{
-		NewChromiumAdapter("chrome", browserPaths("Google Chrome.app/Contents/MacOS/Google Chrome"), launcher),
-		NewChromiumAdapter("chromium", browserPaths("Chromium.app/Contents/MacOS/Chromium"), launcher),
-		NewChromiumAdapter("arc", browserPaths("Arc.app/Contents/MacOS/Arc"), launcher),
-		NewChromiumAdapter("brave", browserPaths("Brave Browser.app/Contents/MacOS/Brave Browser"), launcher),
-		NewChromiumAdapter("edge", browserPaths("Microsoft Edge.app/Contents/MacOS/Microsoft Edge"), launcher),
-	}
 }
 
 // NewChromiumAdapter creates an adapter for one Chromium-family identifier.
@@ -134,12 +121,4 @@ func browserProcessKey(path string, args []string) string {
 		}
 	}
 	return path
-}
-
-func browserPaths(applicationRelativePath string) []string {
-	paths := []string{filepath.Join("/Applications", applicationRelativePath)}
-	if home, err := os.UserHomeDir(); err == nil {
-		paths = append(paths, filepath.Join(home, "Applications", applicationRelativePath))
-	}
-	return paths
 }

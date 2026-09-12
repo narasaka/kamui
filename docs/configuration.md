@@ -1,9 +1,10 @@
 # Configuration
 
-Kamui reads one optional user-level JSON file:
+Kamui reads one optional user-level JSON file. Its default path is:
 
 ```text
-~/Library/Application Support/kamui/config.json
+macOS: ~/Library/Application Support/kamui/config.json
+Linux: $XDG_CONFIG_HOME/kamui/config.json (default: ~/.config/kamui/config.json)
 ```
 
 No configuration is required for basic use. Values are resolved in this order,
@@ -36,8 +37,11 @@ Example:
 ```
 
 Unknown fields are rejected so misspelled security or lifecycle settings do not
-silently fall back to defaults. Generated state and browser profiles are stored
-under the same application-support directory with user-only permissions.
+silently fall back to defaults. On macOS, generated state and browser profiles
+remain under the same application-support directory. On Linux they use
+`$XDG_STATE_HOME/kamui` (default: `~/.local/state/kamui`); controller-only
+files use `$XDG_RUNTIME_DIR/kamui` when available. Kamui creates its directories
+with user-only permissions.
 
 `openBrowserOnSSH` applies only to the optional SSH hook. `idleTimeout` stops a
 session after the proxy has no open connections and no recent traffic; zero
@@ -47,9 +51,9 @@ the browser process it launched for that dedicated profile when the session is
 stopped or expires. Existing profile files are preserved in either case.
 
 `browserLoopback` accepts `remote-only` or `local-first` and defaults to
-`remote-only`. In local-first mode, an available Mac loopback listener wins;
-Kamui uses remote loopback only when both Mac IPv4 and IPv6 connections are
-refused. This permits remote browser content to reach genuine Mac loopback
+`remote-only`. In local-first mode, an available local loopback listener wins;
+Kamui uses remote loopback only when both local IPv4 and IPv6 connections are
+refused. This permits remote browser content to reach genuine local loopback
 services, so use it only with trusted hosts.
 
 This setting affects only Kamui's dedicated browser and is unrelated to

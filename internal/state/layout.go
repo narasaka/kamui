@@ -14,6 +14,7 @@ import (
 // Layout is every persistent or runtime path Kamui owns.
 type Layout struct {
 	Root       string
+	Runtime    string
 	Config     string
 	Socket     string
 	Lock       string
@@ -32,6 +33,7 @@ func NewLayout(root string) Layout {
 	logsRoot := filepath.Join(root, "logs")
 	return Layout{
 		Root:       root,
+		Runtime:    root,
 		Config:     filepath.Join(root, "config.json"),
 		Socket:     filepath.Join(root, "kamui.sock"),
 		Lock:       filepath.Join(root, "controller.lock"),
@@ -43,6 +45,17 @@ func NewLayout(root string) Layout {
 		ControlLog: filepath.Join(logsRoot, "controller.jsonl"),
 		FirstRun:   filepath.Join(stateRoot, "security-warning-shown"),
 	}
+}
+
+// NewLayoutWithRuntime derives a layout whose controller-only files live in a
+// separate user runtime directory.
+func NewLayoutWithRuntime(root, runtimeRoot string) Layout {
+	layout := NewLayout(root)
+	layout.Runtime = runtimeRoot
+	layout.Socket = filepath.Join(runtimeRoot, "kamui.sock")
+	layout.Lock = filepath.Join(runtimeRoot, "controller.lock")
+	layout.Token = filepath.Join(runtimeRoot, "controller.token")
+	return layout
 }
 
 // TakeFirstRunWarning atomically returns true to exactly one successful caller.
@@ -69,7 +82,7 @@ func (l Layout) TakeFirstRunWarning() (bool, error) {
 
 // Ensure creates all directories with user-only permissions.
 func (l Layout) Ensure() error {
-	for _, directory := range []string{l.Root, l.State, l.Profiles, l.Logs} {
+	for _, directory := range uniqueDirectories(l.Root, l.Runtime, filepath.Dir(l.Config), l.State, l.Profiles, l.Logs) {
 		if err := os.MkdirAll(directory, 0o700); err != nil {
 			return fmt.Errorf("create Kamui directory %s: %w", directory, err)
 		}
@@ -78,6 +91,22 @@ func (l Layout) Ensure() error {
 		}
 	}
 	return nil
+}
+
+func uniqueDirectories(directories ...string) []string {
+	unique := make([]string, 0, len(directories))
+	seen := make(map[string]struct{}, len(directories))
+	for _, directory := range directories {
+		if directory == "" {
+			continue
+		}
+		if _, exists := seen[directory]; exists {
+			continue
+		}
+		seen[directory] = struct{}{}
+		unique = append(unique, directory)
+	}
+	return unique
 }
 
 // SessionState returns a contained state-file path for an exact destination.

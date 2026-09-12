@@ -43,7 +43,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	command := &cli.Command{
 		Name:      "kamui",
 		Version:   version.Version,
-		Usage:     "use a remote SSH host's loopback services on a Mac",
+		Usage:     "use a remote SSH host's loopback services on this machine",
 		ArgsUsage: "SSH_DESTINATION",
 		Reader:    streams.In,
 		Writer:    streams.Out,
@@ -86,9 +86,9 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			}
 			_, err = fmt.Fprintf(streams.Out, "%s connected; proxy %s; browser %s\n", destination, result.Session.Proxy, result.Session.Browser)
 			if err == nil && streams.ErrOut != nil && (result.ShowSecurityWarning || result.Session.LoopbackMode == proxy.LocalFirst) {
-				warning := "WARNING: Remote content receives localhost origin trust in this dedicated profile; genuine Mac localhost is unavailable there."
+				warning := "WARNING: Remote content receives localhost origin trust in this dedicated profile; genuine local-machine localhost is unavailable there."
 				if result.Session.LoopbackMode == proxy.LocalFirst {
-					warning = "WARNING: Remote content receives localhost origin trust and may access genuine Mac localhost services in local-first mode."
+					warning = "WARNING: Remote content receives localhost origin trust and may access genuine local-machine localhost services in local-first mode."
 				}
 				_, err = fmt.Fprintln(streams.ErrOut, warning)
 			}
@@ -99,7 +99,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	command.Commands = []*cli.Command{
 		{
 			Name:      "mirror",
-			Usage:     "mirror remote TCP listeners on Mac loopback",
+			Usage:     "mirror remote TCP listeners on local loopback",
 			ArgsUsage: "SSH_DESTINATION",
 			Action: func(ctx context.Context, cmd *cli.Command) error {
 				if err := exactlyOneDestination(cmd); err != nil {

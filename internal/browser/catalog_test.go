@@ -39,9 +39,11 @@ func TestCatalogUsesExplicitSelectionBeforeConfiguredChoices(t *testing.T) {
 func TestCatalogExplicitlyRejectsTorBrowser(t *testing.T) {
 	t.Parallel()
 
-	_, err := browser.NewCatalog(nil).Select(context.Background(), browser.Selection{Explicit: "tor"})
-	if err == nil || !strings.Contains(err.Error(), "privacy guarantees") {
-		t.Fatalf("Select Tor error = %v, want specific privacy explanation", err)
+	for _, selection := range []string{"tor", "/usr/bin/tor-browser"} {
+		_, err := browser.NewCatalog(nil).Select(context.Background(), browser.Selection{Explicit: selection})
+		if err == nil || !strings.Contains(err.Error(), "privacy guarantees") {
+			t.Fatalf("Select %q error = %v, want specific privacy explanation", selection, err)
+		}
 	}
 }
 

@@ -1,5 +1,5 @@
 // Package mirror exposes remote TCP listeners as same-numbered listeners on
-// Mac IPv4 and IPv6 loopback.
+// local IPv4 and IPv6 loopback.
 package mirror
 
 import (
@@ -19,7 +19,7 @@ import (
 // discovery commands.
 const DefaultReconcileInterval = 5 * time.Second
 
-// DefaultDiscoveryTimeout bounds each remote ss subprocess.
+// DefaultDiscoveryTimeout bounds each remote discovery subprocess.
 const DefaultDiscoveryTimeout = 10 * time.Second
 
 // Discoverer finds TCP ports currently listening on one SSH destination.

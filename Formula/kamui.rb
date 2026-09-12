@@ -7,7 +7,6 @@ class Kamui < Formula
   head "https://github.com/narasaka/kamui.git", branch: "main"
 
   depends_on "go" => :build
-  depends_on :macos
 
   def install
     ldflags = "-s -w -X github.com/narasaka/kamui/internal/version.Version=#{version}"

@@ -1,11 +1,11 @@
 # ADR 0006: Reconcile real dual-stack loopback TCP listeners
 
-- Status: accepted
+- Status: superseded in part by ADR 0008
 - Date: 2026-09-12
 
 ## Context
 
-Native Mac clients need transparent access to currently listening remote
+Native clients need transparent access to currently listening remote
 services without per-application proxy settings or declared port lists. Local
 services must retain priority, and several SSH destinations may expose the same
 port.
