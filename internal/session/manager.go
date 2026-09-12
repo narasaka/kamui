@@ -61,10 +61,17 @@ type SessionStatus struct {
 
 // ManagerOptions supplies session implementations and profile storage.
 type ManagerOptions struct {
-	Transport   ssh.Transport
-	Browsers    *browser.Catalog
-	ProfileRoot string
-	Logger      *slog.Logger
+	Transport      ssh.Transport
+	Browsers       *browser.Catalog
+	ProfileRoot    string
+	Logger         *slog.Logger
+	ProxyAddresses ProxyAddressStore
+}
+
+// ProxyAddressStore persists one loopback proxy endpoint per exact destination.
+type ProxyAddressStore interface {
+	PreviousProxy(Destination) (netip.AddrPort, error)
+	RememberProxy(Destination, netip.AddrPort) error
 }
 
 // Result is the outcome of a lifecycle command.
@@ -75,15 +82,16 @@ type Result struct {
 
 // Manager owns all in-process host sessions.
 type Manager struct {
-	mu          sync.Mutex
-	transport   ssh.Transport
-	browsers    *browser.Catalog
-	profileRoot string
-	ctx         context.Context
-	cancel      context.CancelFunc
-	sessions    map[string]*managedSession
-	closed      bool
-	logger      *slog.Logger
+	mu             sync.Mutex
+	transport      ssh.Transport
+	browsers       *browser.Catalog
+	profileRoot    string
+	ctx            context.Context
+	cancel         context.CancelFunc
+	sessions       map[string]*managedSession
+	closed         bool
+	logger         *slog.Logger
+	proxyAddresses ProxyAddressStore
 }
 
 type managedSession struct {
@@ -115,13 +123,14 @@ func NewManagerWithOptions(options ManagerOptions) *Manager {
 		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
 	}
 	return &Manager{
-		transport:   options.Transport,
-		browsers:    options.Browsers,
-		profileRoot: options.ProfileRoot,
-		ctx:         ctx,
-		cancel:      cancel,
-		sessions:    make(map[string]*managedSession),
-		logger:      logger,
+		transport:      options.Transport,
+		browsers:       options.Browsers,
+		profileRoot:    options.ProfileRoot,
+		ctx:            ctx,
+		cancel:         cancel,
+		sessions:       make(map[string]*managedSession),
+		logger:         logger,
+		proxyAddresses: options.ProxyAddresses,
 	}
 }
 
@@ -172,6 +181,14 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 		return Result{Session: existing.snapshot()}, nil
 	}
 
+	var listenAddress netip.AddrPort
+	var err error
+	if m.proxyAddresses != nil {
+		listenAddress, err = m.proxyAddresses.PreviousProxy(destination)
+		if err != nil {
+			return Result{}, fmt.Errorf("read saved proxy address: %w", err)
+		}
+	}
 	connection, err := m.connect(m.ctx, destination, command.Unattended)
 	if err != nil {
 		m.logger.Warn("Kamui session lifecycle", "event", "ssh_bootstrap_failed", "session_key", destination.Key(), "failure_kind", connectFailureKind(err))
@@ -187,12 +204,18 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 		Remote: func(ctx context.Context, network, address string) (net.Conn, error) {
 			return managed.dial(ctx, network, address)
 		},
-	}, proxy.Options{})
+	}, proxy.Options{ListenAddress: listenAddress})
 	if err != nil {
 		_ = connection.Close()
 		return Result{}, err
 	}
 	managed.proxy = runningProxy
+	if m.proxyAddresses != nil {
+		if err := m.proxyAddresses.RememberProxy(destination, runningProxy.Addr()); err != nil {
+			_ = managed.close()
+			return Result{}, fmt.Errorf("remember proxy address: %w", err)
+		}
+	}
 	if m.browsers != nil && !command.SkipBrowser {
 		selected, err := m.browsers.Select(ctx, command.Browser)
 		if err != nil {

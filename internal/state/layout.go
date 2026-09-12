@@ -3,6 +3,7 @@ package state
 
 import (
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -123,4 +124,53 @@ func (l Layout) PreviousBrowser(destination session.Destination) (string, error)
 
 func (l Layout) browserPreference(destination session.Destination) string {
 	return filepath.Join(l.State, destination.Key()+".browser")
+}
+
+// RememberProxy records the ephemeral loopback address so a browser left open
+// can keep using the same endpoint after a controller restart.
+func (l Layout) RememberProxy(destination session.Destination, address netip.AddrPort) error {
+	if address.Addr() != netip.MustParseAddr("127.0.0.1") || address.Port() == 0 {
+		return fmt.Errorf("invalid persisted proxy address %s", address)
+	}
+	if err := l.Ensure(); err != nil {
+		return err
+	}
+	temporary, err := os.CreateTemp(l.State, "proxy-*")
+	if err != nil {
+		return err
+	}
+	temporaryPath := temporary.Name()
+	defer os.Remove(temporaryPath)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		return err
+	}
+	if _, err := temporary.WriteString(address.String() + "\n"); err != nil {
+		temporary.Close()
+		return err
+	}
+	if err := temporary.Close(); err != nil {
+		return err
+	}
+	return os.Rename(temporaryPath, l.proxyPreference(destination))
+}
+
+// PreviousProxy returns the last loopback proxy address for a destination.
+func (l Layout) PreviousProxy(destination session.Destination) (netip.AddrPort, error) {
+	contents, err := os.ReadFile(l.proxyPreference(destination))
+	if os.IsNotExist(err) {
+		return netip.AddrPort{}, nil
+	}
+	if err != nil {
+		return netip.AddrPort{}, err
+	}
+	address, err := netip.ParseAddrPort(strings.TrimSpace(string(contents)))
+	if err != nil || address.Addr() != netip.MustParseAddr("127.0.0.1") || address.Port() == 0 {
+		return netip.AddrPort{}, fmt.Errorf("invalid persisted proxy address")
+	}
+	return address, nil
+}
+
+func (l Layout) proxyPreference(destination session.Destination) string {
+	return filepath.Join(l.State, destination.Key()+".proxy")
 }

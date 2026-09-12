@@ -60,9 +60,10 @@ func runController(arguments []string) error {
 			Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 			Inspector: ssh.SystemConfigInspector{},
 		},
-		Browsers:    browser.NewCatalog(browser.DefaultAdapters(nil)),
-		ProfileRoot: layout.Profiles,
-		Logger:      slog.New(slog.NewJSONHandler(logFile, nil)),
+		Browsers:       browser.NewCatalog(browser.DefaultAdapters(nil)),
+		ProfileRoot:    layout.Profiles,
+		Logger:         slog.New(slog.NewJSONHandler(logFile, nil)),
+		ProxyAddresses: layout,
 	})
 	defer manager.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

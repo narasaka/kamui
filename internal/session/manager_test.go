@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/ssh"
+	"github.com/narasaka/kamui/internal/state"
 )
 
 func TestManagerEnsuresAndReusesOneNetworkingSession(t *testing.T) {
@@ -51,6 +53,34 @@ func TestManagerEnsuresAndReusesOneNetworkingSession(t *testing.T) {
 	}
 	if status.Session.State != session.SessionConnected {
 		t.Fatalf("session state = %v, want connected", status.Session.State)
+	}
+}
+
+func TestManagerReusesPersistedProxyAddressAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	layout := state.NewLayout(t.TempDir())
+	destination, _ := session.ParseDestination("reyna")
+	start := func() (*session.Manager, netip.AddrPort) {
+		manager := session.NewManagerWithOptions(session.ManagerOptions{
+			Transport:      ssh.Transport{Launcher: &managerLauncher{}, ReadinessTimeout: time.Second},
+			ProxyAddresses: layout,
+		})
+		result, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
+		if err != nil {
+			manager.Close()
+			t.Fatal(err)
+		}
+		return manager, result.Session.Proxy
+	}
+	firstManager, first := start()
+	if err := firstManager.Close(); err != nil {
+		t.Fatal(err)
+	}
+	secondManager, second := start()
+	t.Cleanup(func() { _ = secondManager.Close() })
+	if second != first {
+		t.Fatalf("proxy after restart = %s, want persisted %s", second, first)
 	}
 }
 

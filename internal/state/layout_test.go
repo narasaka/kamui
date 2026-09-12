@@ -1,6 +1,7 @@
 package state_test
 
 import (
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -68,5 +69,26 @@ func TestLayoutReturnsSecurityWarningOnlyOnFirstSuccessfulUse(t *testing.T) {
 	}
 	if !first || second {
 		t.Fatalf("warning results = %v then %v, want true then false", first, second)
+	}
+}
+
+func TestLayoutRemembersLoopbackProxyAddressPerDestination(t *testing.T) {
+	t.Parallel()
+
+	layout := state.NewLayout(t.TempDir())
+	destination, _ := session.ParseDestination("reyna")
+	want := netip.MustParseAddrPort("127.0.0.1:52144")
+	if err := layout.RememberProxy(destination, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := layout.PreviousProxy(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("PreviousProxy = %s, want %s", got, want)
+	}
+	if err := layout.RememberProxy(destination, netip.MustParseAddrPort("0.0.0.0:52144")); err == nil {
+		t.Fatal("RememberProxy accepted a non-loopback address")
 	}
 }

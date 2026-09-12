@@ -29,6 +29,7 @@ type Dialers struct {
 // Options controls protocol timeouts. Zero values use safe defaults.
 type Options struct {
 	ReadHeaderTimeout time.Duration
+	ListenAddress     netip.AddrPort
 }
 
 // RunningProxy is a live smart proxy bound to Mac loopback.
@@ -52,7 +53,14 @@ func Start(ctx context.Context, dialers Dialers, options Options) (*RunningProxy
 	if dialers.Direct == nil || dialers.Remote == nil {
 		return nil, fmt.Errorf("proxy requires direct and remote dialers")
 	}
-	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	listenAddress := options.ListenAddress
+	if !listenAddress.IsValid() {
+		listenAddress = netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), 0)
+	}
+	if listenAddress.Addr() != netip.MustParseAddr("127.0.0.1") {
+		return nil, fmt.Errorf("proxy listen address must be IPv4 loopback 127.0.0.1")
+	}
+	listener, err := net.Listen("tcp4", listenAddress.String())
 	if err != nil {
 		return nil, fmt.Errorf("listen on loopback: %w", err)
 	}

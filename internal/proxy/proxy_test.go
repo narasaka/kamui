@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"net/url"
 	"strings"
 	"sync"
@@ -82,6 +83,33 @@ func TestHTTPProxyRoutesLoopbackRemotelyAndOtherHostsDirectly(t *testing.T) {
 	}
 	if fmt.Sprint(directTargets) != "[direct.test:8080]" {
 		t.Errorf("direct dial targets = %v, want [direct.test:8080]", directTargets)
+	}
+}
+
+func TestProxyBindsRequestedLoopbackAddressAndRejectsOtherInterfaces(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := listener.Addr().(*net.TCPAddr).AddrPort()
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dialer := (&net.Dialer{}).DialContext
+	running, err := proxy.Start(context.Background(), proxy.Dialers{Direct: dialer, Remote: dialer}, proxy.Options{ListenAddress: address})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	if running.Addr() != address {
+		t.Fatalf("proxy address = %s, want %s", running.Addr(), address)
+	}
+	if _, err := proxy.Start(context.Background(), proxy.Dialers{Direct: dialer, Remote: dialer}, proxy.Options{
+		ListenAddress: netip.MustParseAddrPort("0.0.0.0:12345"),
+	}); err == nil {
+		t.Fatal("proxy accepted a non-loopback listen address")
 	}
 }
 
