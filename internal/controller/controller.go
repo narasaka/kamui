@@ -164,9 +164,16 @@ func (s *Server) handle(connection net.Conn) {
 		_ = json.NewEncoder(connection).Encode(wireResponse{Error: "controller authentication failed"})
 		return
 	}
-	destination, err := session.ParseDestination(request.Destination)
-	if err != nil {
-		_ = json.NewEncoder(connection).Encode(wireResponse{Error: err.Error()})
+	var destination session.Destination
+	var err error
+	if request.Destination != "" {
+		destination, err = session.ParseDestination(request.Destination)
+		if err != nil {
+			_ = json.NewEncoder(connection).Encode(wireResponse{Error: err.Error()})
+			return
+		}
+	} else if request.Operation != session.Status && request.Operation != session.StopAll {
+		_ = json.NewEncoder(connection).Encode(wireResponse{Error: "SSH destination is required"})
 		return
 	}
 	command := session.Command{

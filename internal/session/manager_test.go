@@ -116,6 +116,33 @@ func TestManagerReconnectsAfterTransientSSHExit(t *testing.T) {
 	}
 }
 
+func TestManagerListsAndStopsAllSessions(t *testing.T) {
+	t.Parallel()
+
+	manager := session.NewManager(ssh.Transport{Launcher: &managerLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	for _, raw := range []string{"zeta", "alpha"} {
+		destination, _ := session.ParseDestination(raw)
+		if _, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed, err := manager.Execute(context.Background(), session.Command{Operation: session.Status})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Sessions) != 2 || listed.Sessions[0].Destination.String() != "alpha" || listed.Sessions[1].Destination.String() != "zeta" {
+		t.Fatalf("listed sessions = %#v, want alpha then zeta", listed.Sessions)
+	}
+	if _, err := manager.Execute(context.Background(), session.Command{Operation: session.StopAll}); err != nil {
+		t.Fatalf("stop all: %v", err)
+	}
+	listed, err = manager.Execute(context.Background(), session.Command{Operation: session.Status})
+	if err != nil || len(listed.Sessions) != 0 {
+		t.Fatalf("sessions after stop all = %#v, error %v", listed.Sessions, err)
+	}
+}
+
 type managerLauncher struct {
 	mu        sync.Mutex
 	starts    int

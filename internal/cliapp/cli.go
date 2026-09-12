@@ -77,7 +77,10 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				if err != nil {
 					return err
 				}
-				return printStatus(streams.Out, result.Session)
+				if cmd.NArg() == 0 {
+					return printStatuses(streams.Out, result.Sessions)
+				}
+				return printStatuses(streams.Out, []session.SessionStatus{result.Session})
 			},
 		},
 		{
@@ -89,7 +92,11 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 					if cmd.NArg() != 0 {
 						return fmt.Errorf("stop accepts either SSH_DESTINATION or --all, not both")
 					}
-					return notImplemented("stop")
+					if application == nil {
+						return notImplemented("stop")
+					}
+					_, err := application.Execute(ctx, kamuiapp.Request{Operation: kamuiapp.Stop, All: true})
+					return err
 				}
 				if err := exactlyOneDestination(cmd); err != nil {
 					return err
@@ -172,10 +179,17 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	return command
 }
 
-func printStatus(writer io.Writer, status session.SessionStatus) error {
-	_, err := fmt.Fprintf(writer, "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\n%s\t%s\t%s\t%s\t%s\n",
-		status.Destination, sessionState(status.State), status.Browser, status.Proxy, sessionState(status.State))
-	return err
+func printStatuses(writer io.Writer, statuses []session.SessionStatus) error {
+	if _, err := fmt.Fprintln(writer, "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH"); err != nil {
+		return err
+	}
+	for _, status := range statuses {
+		if _, err := fmt.Fprintf(writer, "%s\t%s\t%s\t%s\t%s\n",
+			status.Destination, sessionState(status.State), status.Browser, status.Proxy, sessionState(status.State)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func sessionState(state session.SessionState) string {

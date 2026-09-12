@@ -74,14 +74,20 @@ func New(layout state.Layout, starter Starter) *Application {
 
 // Execute applies one user command.
 func (a *Application) Execute(ctx context.Context, request Request) (Result, error) {
-	destination, err := session.ParseDestination(request.Destination)
-	if err != nil {
-		return Result{}, err
+	var destination session.Destination
+	var err error
+	allowsEmptyDestination := (request.Operation == Status && request.Destination == "") ||
+		(request.Operation == Stop && request.All)
+	if !allowsEmptyDestination {
+		destination, err = session.ParseDestination(request.Destination)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	if request.Operation == PrintSSHConfig {
 		return Result{Output: fmt.Sprintf("Host %s\n    PermitLocalCommand yes\n    LocalCommand kamui ssh-hook %%n\n", destination)}, nil
 	}
-	operation, err := sessionOperation(request.Operation)
+	operation, err := sessionOperation(request.Operation, request.All)
 	if err != nil {
 		return Result{}, err
 	}
@@ -146,13 +152,16 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	}
 }
 
-func sessionOperation(operation Operation) (session.Operation, error) {
+func sessionOperation(operation Operation, all bool) (session.Operation, error) {
 	switch operation {
 	case Ensure, SSHHook:
 		return session.Ensure, nil
 	case Status:
 		return session.Status, nil
 	case Stop:
+		if all {
+			return session.StopAll, nil
+		}
 		return session.Stop, nil
 	case Open:
 		return session.Open, nil

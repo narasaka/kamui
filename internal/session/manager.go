@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"sort"
 	"sync"
 	"time"
 
@@ -22,6 +23,7 @@ const (
 	Status
 	Stop
 	Open
+	StopAll
 )
 
 // Command is one request against the session lifecycle interface.
@@ -122,6 +124,8 @@ func (m *Manager) Execute(ctx context.Context, command Command) (Result, error) 
 		return Result{}, m.stop(command.Destination)
 	case Open:
 		return m.open(ctx, command)
+	case StopAll:
+		return Result{}, m.stopAll()
 	default:
 		return Result{}, fmt.Errorf("unknown session operation %d", command.Operation)
 	}
@@ -205,11 +209,32 @@ func (m *Manager) open(ctx context.Context, command Command) (Result, error) {
 func (m *Manager) status(destination Destination) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if destination.String() == "" {
+		result := Result{Sessions: make([]SessionStatus, 0, len(m.sessions))}
+		for _, managed := range m.sessions {
+			result.Sessions = append(result.Sessions, managed.snapshot())
+		}
+		sort.Slice(result.Sessions, func(i, j int) bool {
+			return result.Sessions[i].Destination.String() < result.Sessions[j].Destination.String()
+		})
+		return result, nil
+	}
 	managed := m.sessions[destination.Key()]
 	if managed == nil {
 		return Result{}, fmt.Errorf("no Kamui session for %s", destination)
 	}
 	return Result{Session: managed.snapshot()}, nil
+}
+
+func (m *Manager) stopAll() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var joined error
+	for key, managed := range m.sessions {
+		joined = errors.Join(joined, managed.close())
+		delete(m.sessions, key)
+	}
+	return joined
 }
 
 func (m *Manager) stop(destination Destination) error {
