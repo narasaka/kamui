@@ -68,6 +68,26 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 
 	command.Commands = []*cli.Command{
 		{
+			Name:  "logs",
+			Usage: "show OpenSSH background diagnostics",
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}},
+				&cli.IntFlag{Name: "lines", Aliases: []string{"n"}, Value: 100},
+			},
+			Action: func(ctx context.Context, cmd *cli.Command) error {
+				if err := noArguments(cmd); err != nil {
+					return err
+				}
+				if cmd.Int("lines") < 0 {
+					return fmt.Errorf("logs --lines cannot be negative")
+				}
+				if application == nil {
+					return notImplemented("logs")
+				}
+				return application.StreamLogs(ctx, streams.Out, cmd.Bool("follow"), cmd.Int("lines"))
+			},
+		},
+		{
 			Name:      "status",
 			ArgsUsage: "[SSH_DESTINATION]",
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "verbose"}},
