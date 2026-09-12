@@ -1,8 +1,8 @@
 class Kamui < Formula
   desc "Use a remote SSH host's loopback services in a development browser"
   homepage "https://github.com/narasaka/kamui"
-  head "https://github.com/narasaka/kamui.git", branch: "main"
   license "MIT"
+  head "https://github.com/narasaka/kamui.git", branch: "main"
 
   depends_on "go" => :build
 

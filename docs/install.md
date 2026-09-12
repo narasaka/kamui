@@ -4,17 +4,19 @@ Kamui currently supports macOS on Apple Silicon and Intel.
 
 ## Homebrew source installation
 
-Until a tagged formula is published in a tap, install the checked-out formula
-from source:
+Until a tagged formula is published, add the repository as a tap and build the
+HEAD formula from source:
 
 ```sh
-brew install --HEAD ./Formula/kamui.rb
+brew tap narasaka/kamui https://github.com/narasaka/kamui
+brew install --HEAD narasaka/kamui/kamui
 ```
 
 Upgrade it with:
 
 ```sh
-brew reinstall --HEAD ./Formula/kamui.rb
+brew update
+brew reinstall --HEAD narasaka/kamui/kamui
 ```
 
 Uninstall the binary while preserving configuration and development profiles:
