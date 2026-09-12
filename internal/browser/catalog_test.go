@@ -45,6 +45,25 @@ func TestCatalogExplicitlyRejectsTorBrowser(t *testing.T) {
 	}
 }
 
+func TestCatalogListsDetectedBrowsersInPreferenceOrder(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	chromePath := executable(t, root, "chrome")
+	arcPath := executable(t, root, "arc")
+	catalog := browser.NewCatalog([]browser.Adapter{
+		browser.NewChromiumAdapter("chrome", []string{chromePath}, &recordingLauncher{}),
+		browser.NewChromiumAdapter("arc", []string{arcPath}, &recordingLauncher{}),
+	})
+	got, err := catalog.Detect(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 || got[0].ID != "chrome" || got[1].ID != "arc" {
+		t.Fatalf("detected = %#v, want chrome then arc", got)
+	}
+}
+
 func TestDefaultChromiumAdaptersUseRequiredStableIdentifiers(t *testing.T) {
 	t.Parallel()
 

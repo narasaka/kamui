@@ -133,7 +133,24 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "json"}},
 			Action:    destinationAction("doctor", exactlyOneDestination),
 		},
-		{Name: "browsers", Action: notImplementedAction("browsers", noArguments)},
+		{Name: "browsers", Action: func(ctx context.Context, cmd *cli.Command) error {
+			if err := noArguments(cmd); err != nil {
+				return err
+			}
+			if application == nil {
+				return notImplemented("browsers")
+			}
+			result, err := application.Execute(ctx, kamuiapp.Request{Operation: kamuiapp.Browsers})
+			if err != nil {
+				return err
+			}
+			for _, installation := range result.Installations {
+				if _, err := fmt.Fprintf(streams.Out, "%s\t%s\n", installation.ID, installation.Executable); err != nil {
+					return err
+				}
+			}
+			return nil
+		}},
 		{
 			Name:      "ssh-hook",
 			ArgsUsage: "SSH_DESTINATION",

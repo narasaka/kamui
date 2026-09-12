@@ -32,6 +32,19 @@ func NewCatalog(adapters []Adapter) *Catalog {
 	return &Catalog{adapters: append([]Adapter(nil), adapters...)}
 }
 
+// Detect lists supported installations in catalog preference order.
+func (c *Catalog) Detect(ctx context.Context) ([]Installation, error) {
+	var detected []Installation
+	for _, adapter := range c.adapters {
+		installations, err := adapter.Detect(ctx)
+		if err != nil {
+			return nil, err
+		}
+		detected = append(detected, installations...)
+	}
+	return detected, nil
+}
+
 // Select discovers supported browsers and returns the highest-precedence match.
 func (c *Catalog) Select(ctx context.Context, selection Selection) (Selected, error) {
 	explicit := strings.ToLower(strings.TrimSpace(selection.Explicit))

@@ -45,7 +45,8 @@ type Request struct {
 // Result is the observable command result.
 type Result struct {
 	session.Result
-	Output string
+	Output        string
+	Installations []browser.Installation
 }
 
 // Starter starts the absent controller at the operating-system process seam.
@@ -55,25 +56,36 @@ type Starter interface {
 
 // Application starts or contacts the controller and executes commands.
 type Application struct {
-	layout  state.Layout
-	client  controller.Client
-	starter Starter
-	config  config.Loader
+	layout   state.Layout
+	client   controller.Client
+	starter  Starter
+	config   config.Loader
+	browsers *browser.Catalog
 }
 
 // New creates a command gateway for one user state root.
 func New(layout state.Layout, starter Starter) *Application {
+	return NewWithBrowsers(layout, starter, browser.NewCatalog(browser.DefaultAdapters(nil)))
+}
+
+// NewWithBrowsers creates a gateway with an explicit browser catalog.
+func NewWithBrowsers(layout state.Layout, starter Starter, browsers *browser.Catalog) *Application {
 	if starter == nil {
 		starter = ProcessStarter{}
 	}
 	return &Application{
 		layout: layout, client: controller.Client{Layout: layout}, starter: starter,
-		config: config.Loader{Path: layout.Config},
+		config:   config.Loader{Path: layout.Config},
+		browsers: browsers,
 	}
 }
 
 // Execute applies one user command.
 func (a *Application) Execute(ctx context.Context, request Request) (Result, error) {
+	if request.Operation == Browsers {
+		installations, err := a.browsers.Detect(ctx)
+		return Result{Installations: installations}, err
+	}
 	var destination session.Destination
 	var err error
 	allowsEmptyDestination := (request.Operation == Status && request.Destination == "") ||
