@@ -32,6 +32,24 @@ browser profiles after uninstalling, move this directory to the Trash:
 ~/Library/Application Support/kamui
 ```
 
+## Publishing a release
+
+The tag-driven release workflow requires a `HOMEBREW_TAP_TOKEN` repository
+secret. Use a fine-grained personal access token with contents write access only
+to `narasaka/homebrew-tap`.
+
+After the release commit is on `main`, push an annotated semantic-version tag:
+
+```sh
+git tag -a v0.0.2 -m "Kamui v0.0.2"
+git push origin v0.0.2
+```
+
+The workflow validates that the tag belongs to `main`, runs all checks, builds
+and publishes both macOS binaries, and updates the Homebrew formula URL, source
+checksum, version metadata, commit, and build date. Do not update the formula
+manually before the tag exists.
+
 ## Reproducible release binaries
 
 Maintainers build both architectures and checksums with:

@@ -167,7 +167,7 @@ func (h *handler) serveConnect(w http.ResponseWriter, request *http.Request) {
 	}
 	dial := h.dialers.Direct
 	if plan.Kind == routing.RemoteLoopback {
-		dial = h.dialers.Remote
+		dial = h.dialRemoteLoopback
 	}
 	upstream, err := dial(request.Context(), "tcp", plan.Address)
 	if err != nil {
@@ -286,7 +286,28 @@ func (h *handler) dialContext(ctx context.Context, network, address string) (net
 		return nil, err
 	}
 	if plan.Kind == routing.RemoteLoopback {
-		return h.dialers.Remote(ctx, network, plan.Address)
+		return h.dialRemoteLoopback(ctx, network, plan.Address)
 	}
 	return h.dialers.Direct(ctx, network, plan.Address)
+}
+
+func (h *handler) dialRemoteLoopback(ctx context.Context, network, ipv4Address string) (net.Conn, error) {
+	connection, ipv4Err := h.dialers.Remote(ctx, network, ipv4Address)
+	if ipv4Err == nil {
+		return connection, nil
+	}
+	if ctx.Err() != nil {
+		return nil, ipv4Err
+	}
+
+	_, port, err := net.SplitHostPort(ipv4Address)
+	if err != nil {
+		return nil, ipv4Err
+	}
+	ipv6Address := net.JoinHostPort("::1", port)
+	connection, ipv6Err := h.dialers.Remote(ctx, network, ipv6Address)
+	if ipv6Err == nil {
+		return connection, nil
+	}
+	return nil, fmt.Errorf("remote loopback unavailable over IPv4 (%v) and IPv6: %w", ipv4Err, ipv6Err)
 }

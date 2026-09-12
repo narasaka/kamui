@@ -1,0 +1,130 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Validate release tag
+        id: release
+        shell: bash
+        run: |
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "release tags must use vMAJOR.MINOR.PATCH" >&2
+            exit 1
+          fi
+          git fetch origin main
+          commit="$(git rev-parse HEAD)"
+          if ! git merge-base --is-ancestor "$commit" origin/main; then
+            echo "release tag must point to a commit on main" >&2
+            exit 1
+          fi
+          {
+            echo "version=${GITHUB_REF_NAME#v}"
+            echo "commit=$commit"
+            echo "build_date=$(git show -s --format=%cI "$commit")"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Require Homebrew tap credential
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [[ -z "$HOMEBREW_TAP_TOKEN" ]]; then
+            echo "HOMEBREW_TAP_TOKEN must have contents write access to narasaka/homebrew-tap" >&2
+            exit 1
+          fi
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Check source
+        run: make check
+
+      - name: Build release artifacts
+        env:
+          KAMUI_BUILD_COMMIT: ${{ steps.release.outputs.commit }}
+          KAMUI_BUILD_DATE: ${{ steps.release.outputs.build_date }}
+        run: make package VERSION=${{ steps.release.outputs.version }}
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --verify-tag \
+              --title "Kamui $TAG" \
+              --generate-notes
+          fi
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: narasaka/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Homebrew formula
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+          BUILD_DATE: ${{ steps.release.outputs.build_date }}
+        shell: bash
+        run: |
+          source_url="https://github.com/narasaka/kamui/archive/refs/tags/v${VERSION}.tar.gz"
+          curl --fail --location --retry 5 --retry-all-errors \
+            "$source_url" --output source.tar.gz
+          source_sha="$(shasum -a 256 source.tar.gz | awk '{print $1}')"
+          export SOURCE_URL="$source_url" SOURCE_SHA="$source_sha"
+          ruby <<'RUBY'
+          path = "homebrew-tap/kamui.rb"
+          formula = File.read(path)
+          replacements = {
+            /^  url ".*"$/ => %(  url "#{ENV.fetch("SOURCE_URL")}"),
+            /^  sha256 ".*"$/ => %(  sha256 "#{ENV.fetch("SOURCE_SHA")}"),
+            %r{version\.Commit=[^ ]+} => "version.Commit=#{ENV.fetch("RELEASE_COMMIT")}",
+            %r{version\.BuildDate=[^\"]+} => "version.BuildDate=#{ENV.fetch("BUILD_DATE")}",
+          }
+          replacements.each do |pattern, replacement|
+            matches = formula.scan(pattern).length
+            abort "expected one #{pattern.inspect} in #{path}, found #{matches}" unless matches == 1
+            formula.sub!(pattern, replacement)
+          end
+          File.write(path, formula)
+          RUBY
+
+      - name: Publish Homebrew formula
+        working-directory: homebrew-tap
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          if git diff --quiet -- kamui.rb; then
+            echo "kamui.rb already describes v${VERSION}"
+            exit 0
+          fi
+          git diff --check
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add kamui.rb
+          git commit -m "kamui: update to v${VERSION}"
+          git push origin HEAD:main
