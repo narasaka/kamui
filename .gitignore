@@ -1,1 +1,12 @@
 PLAN.md
+
+# Build output
+/bin/
+/dist/
+/kamui
+*.test
+*.prof
+
+# Local development state
+.DS_Store
+.kamui/
