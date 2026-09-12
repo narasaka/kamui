@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/ssh"
 )
@@ -20,12 +21,15 @@ const (
 	Ensure Operation = iota
 	Status
 	Stop
+	Open
 )
 
 // Command is one request against the session lifecycle interface.
 type Command struct {
 	Operation   Operation
 	Destination Destination
+	Browser     browser.Selection
+	URLs        []string
 }
 
 // SessionState is the user-visible lifecycle state.
@@ -44,6 +48,14 @@ type SessionStatus struct {
 	State       SessionState
 	Proxy       netip.AddrPort
 	LastError   error
+	Browser     string
+}
+
+// ManagerOptions supplies session implementations and profile storage.
+type ManagerOptions struct {
+	Transport   ssh.Transport
+	Browsers    *browser.Catalog
+	ProfileRoot string
 }
 
 // Result is the outcome of a lifecycle command.
@@ -54,33 +66,44 @@ type Result struct {
 
 // Manager owns all in-process host sessions.
 type Manager struct {
-	mu        sync.Mutex
-	transport ssh.Transport
-	ctx       context.Context
-	cancel    context.CancelFunc
-	sessions  map[string]*managedSession
-	closed    bool
+	mu          sync.Mutex
+	transport   ssh.Transport
+	browsers    *browser.Catalog
+	profileRoot string
+	ctx         context.Context
+	cancel      context.CancelFunc
+	sessions    map[string]*managedSession
+	closed      bool
 }
 
 type managedSession struct {
-	mu           sync.RWMutex
-	ctx          context.Context
-	cancel       context.CancelFunc
-	destination  Destination
-	connection   *ssh.Connection
-	proxy        *proxy.RunningProxy
-	lastError    error
-	requiresAuth bool
+	mu             sync.RWMutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	destination    Destination
+	connection     *ssh.Connection
+	proxy          *proxy.RunningProxy
+	lastError      error
+	requiresAuth   bool
+	browserAdapter browser.Adapter
+	browserProfile browser.Profile
 }
 
 // NewManager creates an empty session manager.
 func NewManager(transport ssh.Transport) *Manager {
+	return NewManagerWithOptions(ManagerOptions{Transport: transport})
+}
+
+// NewManagerWithOptions creates a manager with browser lifecycle support.
+func NewManagerWithOptions(options ManagerOptions) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		transport: transport,
-		ctx:       ctx,
-		cancel:    cancel,
-		sessions:  make(map[string]*managedSession),
+		transport:   options.Transport,
+		browsers:    options.Browsers,
+		profileRoot: options.ProfileRoot,
+		ctx:         ctx,
+		cancel:      cancel,
+		sessions:    make(map[string]*managedSession),
 	}
 }
 
@@ -91,19 +114,22 @@ func (m *Manager) Execute(ctx context.Context, command Command) (Result, error) 
 	}
 	switch command.Operation {
 	case Ensure:
-		return m.ensure(command.Destination)
+		return m.ensure(ctx, command)
 	case Status:
 		return m.status(command.Destination)
 	case Stop:
 		return Result{}, m.stop(command.Destination)
+	case Open:
+		return m.open(ctx, command)
 	default:
 		return Result{}, fmt.Errorf("unknown session operation %d", command.Operation)
 	}
 }
 
-func (m *Manager) ensure(destination Destination) (Result, error) {
+func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	destination := command.Destination
 	if m.closed {
 		return Result{}, errors.New("session manager is closed")
 	}
@@ -128,8 +154,50 @@ func (m *Manager) ensure(destination Destination) (Result, error) {
 		return Result{}, err
 	}
 	managed.proxy = runningProxy
+	if m.browsers != nil {
+		selected, err := m.browsers.Select(ctx, command.Browser)
+		if err != nil {
+			_ = managed.close()
+			return Result{}, err
+		}
+		profile, err := selected.Adapter.PrepareProfile(ctx, browser.Session{
+			Key:         destination.Key(),
+			Proxy:       runningProxy.Addr(),
+			ProfileRoot: m.profileRoot,
+		}, selected.Installation)
+		if err != nil {
+			_ = managed.close()
+			return Result{}, err
+		}
+		if err := selected.Adapter.Launch(ctx, profile, command.URLs); err != nil {
+			_ = managed.close()
+			return Result{}, err
+		}
+		managed.browserAdapter = selected.Adapter
+		managed.browserProfile = profile
+	}
 	m.sessions[destination.Key()] = managed
 	go m.monitor(managed)
+	return Result{Session: managed.snapshot()}, nil
+}
+
+func (m *Manager) open(ctx context.Context, command Command) (Result, error) {
+	m.mu.Lock()
+	managed := m.sessions[command.Destination.Key()]
+	m.mu.Unlock()
+	if managed == nil {
+		return Result{}, fmt.Errorf("no Kamui session for %s", command.Destination)
+	}
+	managed.mu.RLock()
+	adapter := managed.browserAdapter
+	profile := managed.browserProfile
+	managed.mu.RUnlock()
+	if adapter == nil {
+		return Result{}, fmt.Errorf("session for %s has no development browser", command.Destination)
+	}
+	if err := adapter.Open(ctx, profile, command.URLs); err != nil {
+		return Result{}, err
+	}
 	return Result{Session: managed.snapshot()}, nil
 }
 
@@ -167,12 +235,16 @@ func (s *managedSession) snapshot() SessionStatus {
 	} else if transport.State == ssh.Connecting {
 		state = SessionConnecting
 	}
-	return SessionStatus{
+	status := SessionStatus{
 		Destination: s.destination,
 		State:       state,
 		Proxy:       s.proxy.Addr(),
 		LastError:   errors.Join(transport.Error, s.lastError),
 	}
+	if s.browserAdapter != nil {
+		status.Browser = s.browserAdapter.ID()
+	}
+	return status
 }
 
 func (s *managedSession) dial(ctx context.Context, network, address string) (net.Conn, error) {

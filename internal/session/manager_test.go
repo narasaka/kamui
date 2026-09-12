@@ -4,10 +4,12 @@ import (
 	"context"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/ssh"
 )
@@ -44,6 +46,48 @@ func TestManagerEnsuresAndReusesOneNetworkingSession(t *testing.T) {
 	}
 	if status.Session.State != session.SessionConnected {
 		t.Fatalf("session state = %v, want connected", status.Session.State)
+	}
+}
+
+func TestManagerLaunchesSelectedBrowserAndOpensURLsInItsProfile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	executable := filepath.Join(root, "chrome")
+	if err := os.WriteFile(executable, []byte("browser"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	browserLauncher := &sessionBrowserLauncher{}
+	catalog := browser.NewCatalog([]browser.Adapter{
+		browser.NewChromiumAdapter("chrome", []string{executable}, browserLauncher),
+	})
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:   ssh.Transport{Launcher: &managerLauncher{}, ReadinessTimeout: time.Second},
+		Browsers:    catalog,
+		ProfileRoot: filepath.Join(root, "profiles"),
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	ensured, err := manager.Execute(context.Background(), session.Command{
+		Operation:   session.Ensure,
+		Destination: destination,
+		Browser:     browser.Selection{Explicit: "chrome"},
+	})
+	if err != nil {
+		t.Fatalf("ensure: %v", err)
+	}
+	if ensured.Session.Browser != "chrome" {
+		t.Fatalf("browser = %q, want chrome", ensured.Session.Browser)
+	}
+	if _, err := manager.Execute(context.Background(), session.Command{
+		Operation:   session.Open,
+		Destination: destination,
+		URLs:        []string{"http://localhost:3003"},
+	}); err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if got := browserLauncher.count(); got != 2 {
+		t.Fatalf("browser launches = %d, want initial launch plus open", got)
 	}
 }
 
@@ -123,6 +167,24 @@ type managerProcess struct {
 	listener net.Listener
 	done     chan struct{}
 	once     sync.Once
+}
+
+type sessionBrowserLauncher struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (l *sessionBrowserLauncher) Launch(context.Context, string, []string) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls++
+	return nil
+}
+
+func (l *sessionBrowserLauncher) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.calls
 }
 
 func (p *managerProcess) Wait() error {
