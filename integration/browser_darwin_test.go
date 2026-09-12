@@ -3,6 +3,7 @@
 package integration_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -23,6 +24,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -125,7 +127,7 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 				}
 				t.Skipf("%s is not installed", installed.id)
 			}
-			launcher := &headlessLauncher{
+			launcher := &browserTestLauncher{
 				prefix:  []string{"--headless=new", "--disable-gpu", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--ignore-certificate-errors"},
 				reports: reports,
 			}
@@ -149,14 +151,15 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 	}
 
 	geckoBrowsers := []struct {
-		id   string
-		path string
+		id     string
+		path   string
+		prefix []string
 	}{
-		{id: "firefox", path: "/Applications/Firefox.app/Contents/MacOS/firefox"},
-		{id: "firefox-developer-edition", path: "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox"},
-		{id: "zen", path: "/Applications/Zen.app/Contents/MacOS/zen"},
+		{id: "firefox", path: "/Applications/Firefox.app/Contents/MacOS/firefox", prefix: []string{"-headless"}},
+		{id: "firefox-developer-edition", path: "/Applications/Firefox Developer Edition.app/Contents/MacOS/firefox", prefix: []string{"-headless"}},
+		{id: "zen", path: "/Applications/Zen.app/Contents/MacOS/zen", prefix: []string{"-headless"}},
 		{id: "librewolf", path: "/Applications/LibreWolf.app/Contents/MacOS/librewolf"},
-		{id: "floorp", path: "/Applications/Floorp.app/Contents/MacOS/floorp"},
+		{id: "floorp", path: "/Applications/Floorp.app/Contents/MacOS/floorp", prefix: []string{"-headless"}},
 	}
 	for _, installed := range geckoBrowsers {
 		installed := installed
@@ -174,7 +177,7 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 				}
 				t.Skip("certutil is required to trust the disposable HTTPS certificate")
 			}
-			launcher := &headlessLauncher{prefix: []string{"-headless"}, reports: reports}
+			launcher := &browserTestLauncher{prefix: installed.prefix, reports: reports}
 			adapter := browser.NewGeckoAdapter(installed.id, []string{installed.path}, launcher)
 			profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
 				Key: destination.Key(), Proxy: result.Session.Proxy,
@@ -234,7 +237,7 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(first+"|"+sec
 	if err != nil {
 		t.Fatal(err)
 	}
-	launcher := &headlessLauncher{
+	launcher := &browserTestLauncher{
 		prefix:  []string{"--headless=new", "--disable-gpu", "--disable-background-networking", "--disable-component-update", "--disable-sync"},
 		reports: reports, want: []string{"before-restart", "after-restart"},
 	}
@@ -416,19 +419,45 @@ func requiredBrowser(id string) bool {
 	return false
 }
 
-type headlessLauncher struct {
+type browserTestLauncher struct {
 	prefix  []string
 	want    []string
 	reports <-chan string
 }
 
-func (l *headlessLauncher) Launch(ctx context.Context, path string, args []string) error {
+func TestBrowserTestLauncherSynchronizesProcessDiagnostics(t *testing.T) {
+	reports := make(chan string, 1)
+	time.AfterFunc(20*time.Millisecond, func() { reports <- "completed" })
+	launcher := &browserTestLauncher{want: []string{"missing"}, reports: reports}
+	if err := launcher.Launch(context.Background(), "/usr/bin/yes", []string{"browser diagnostic"}); err == nil {
+		t.Fatal("Launch returned nil, want missing-report error")
+	}
+}
+
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
+func (l *browserTestLauncher) Launch(ctx context.Context, path string, args []string) error {
 	arguments := append([]string(nil), l.prefix...)
 	arguments = append(arguments, args...)
 	launchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	command := exec.CommandContext(launchContext, path, arguments...)
-	var output strings.Builder
+	var output synchronizedBuffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
