@@ -31,6 +31,13 @@ Kamui neither sets nor reads an OpenSSH control socket. If the user's effective
 configuration enables `ControlMaster`, OpenSSH may reuse its transport; Kamui's
 lifetime and correctness do not depend on that optimization.
 
+A disposable macOS OpenSSH-server test confirms that four concurrent client
+sessions can reuse one configured control master without delaying their remote
+commands. OpenSSH runs `LocalCommand` when establishing that master, not again
+for each multiplexed client, which is sufficient because the first hook creates
+the independent Kamui session. The same fixture verifies that a non-multiplexed
+`BatchMode=yes` login with an invalid identity fails promptly.
+
 ## Consequences
 
 Normal `SIGINT`/`SIGTERM`, explicit stop, idle expiry, and controller shutdown
