@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"github.com/narasaka/kamui/internal/app"
@@ -50,14 +49,19 @@ func runController(arguments []string) error {
 	if err := layout.Ensure(); err != nil {
 		return err
 	}
-	logFile, err := os.OpenFile(filepath.Join(layout.Logs, "controller.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	logFile, err := os.OpenFile(layout.ControlLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("open controller log: %w", err)
 	}
 	defer logFile.Close()
+	sshLogFile, err := os.OpenFile(layout.SSHLog, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open OpenSSH log: %w", err)
+	}
+	defer sshLogFile.Close()
 	manager := session.NewManagerWithOptions(session.ManagerOptions{
 		Transport: ssh.Transport{
-			Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
+			Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, BackgroundStderr: sshLogFile,
 			Inspector: ssh.SystemConfigInspector{},
 		},
 		Browsers:       browser.NewCatalog(browser.DefaultAdapters(nil)),

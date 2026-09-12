@@ -1,6 +1,7 @@
 package app_test
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"strings"
@@ -32,6 +33,72 @@ func TestPrintSSHConfigReturnsSnippetWithoutStartingController(t *testing.T) {
 	if result.Output != want {
 		t.Fatalf("snippet = %q, want %q", result.Output, want)
 	}
+}
+
+func TestStreamLogsFollowsOpenSSHDiagnosticsUntilCancelled(t *testing.T) {
+	t.Parallel()
+
+	layout := state.NewLayout(t.TempDir())
+	if err := layout.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.SSHLog, []byte("existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application := app.New(layout, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var output lockedBuffer
+	done := make(chan error, 1)
+	go func() {
+		done <- application.StreamLogs(ctx, &output, true, 100)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for !strings.Contains(output.String(), "existing\n") {
+		if time.Now().After(deadline) {
+			t.Fatalf("initial log output = %q, want existing line", output.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	file, err := os.OpenFile(layout.SSHLog, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.WriteString("new channel error\n"); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for !strings.Contains(output.String(), "new channel error\n") {
+		if time.Now().After(deadline) {
+			t.Fatalf("followed log output = %q, want appended line", output.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("StreamLogs returned error: %v", err)
+	}
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(value []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.Write(value)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.b.String()
 }
 
 func TestDoctorReportsAllLocalAndRemoteChecksWithoutStartingController(t *testing.T) {

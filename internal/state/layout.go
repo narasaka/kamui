@@ -13,30 +13,35 @@ import (
 
 // Layout is every persistent or runtime path Kamui owns.
 type Layout struct {
-	Root     string
-	Config   string
-	Socket   string
-	Lock     string
-	Token    string
-	State    string
-	Profiles string
-	Logs     string
-	FirstRun string
+	Root       string
+	Config     string
+	Socket     string
+	Lock       string
+	Token      string
+	State      string
+	Profiles   string
+	Logs       string
+	SSHLog     string
+	ControlLog string
+	FirstRun   string
 }
 
 // NewLayout derives a complete layout from an application-support root.
 func NewLayout(root string) Layout {
 	stateRoot := filepath.Join(root, "state")
+	logsRoot := filepath.Join(root, "logs")
 	return Layout{
-		Root:     root,
-		Config:   filepath.Join(root, "config.json"),
-		Socket:   filepath.Join(root, "kamui.sock"),
-		Lock:     filepath.Join(root, "controller.lock"),
-		Token:    filepath.Join(stateRoot, "controller.token"),
-		State:    stateRoot,
-		Profiles: filepath.Join(root, "profiles"),
-		Logs:     filepath.Join(root, "logs"),
-		FirstRun: filepath.Join(stateRoot, "security-warning-shown"),
+		Root:       root,
+		Config:     filepath.Join(root, "config.json"),
+		Socket:     filepath.Join(root, "kamui.sock"),
+		Lock:       filepath.Join(root, "controller.lock"),
+		Token:      filepath.Join(stateRoot, "controller.token"),
+		State:      stateRoot,
+		Profiles:   filepath.Join(root, "profiles"),
+		Logs:       logsRoot,
+		SSHLog:     filepath.Join(logsRoot, "openssh.log"),
+		ControlLog: filepath.Join(logsRoot, "controller.jsonl"),
+		FirstRun:   filepath.Join(stateRoot, "security-warning-shown"),
 	}
 }
 

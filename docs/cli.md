@@ -19,6 +19,9 @@ executable path. An ambiguous path requires an explicit browser family.
 - `open SSH_DESTINATION [URL ...]` opens URLs in the matching profile.
 - `doctor SSH_DESTINATION` checks local prerequisites and connectivity.
 - `browsers` lists detected supported installations.
+- `logs` prints the latest 100 lines of OpenSSH background diagnostics.
+  `logs --follow` (or `logs -f`) continues streaming appended diagnostics;
+  `--lines N` changes the initial line count and `--lines 0` prints all lines.
 - `ssh-hook SSH_DESTINATION` requests activation and returns promptly.
 - `print-ssh-config SSH_ALIAS` prints, but never installs, a `LocalCommand`
   snippet using `%n`.

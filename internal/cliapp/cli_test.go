@@ -36,6 +36,7 @@ func TestPlannedCommandsReturnExplicitNotImplementedErrors(t *testing.T) {
 		{name: "open", args: []string{"kamui", "open", "reyna", "http://localhost:3000"}, want: "open is not implemented"},
 		{name: "doctor", args: []string{"kamui", "doctor", "reyna"}, want: "doctor is not implemented"},
 		{name: "browsers", args: []string{"kamui", "browsers"}, want: "browsers is not implemented"},
+		{name: "logs", args: []string{"kamui", "logs"}, want: "logs is not implemented"},
 		{name: "ssh hook", args: []string{"kamui", "ssh-hook", "reyna"}, want: "ssh-hook is not implemented"},
 		{name: "SSH config", args: []string{"kamui", "print-ssh-config", "reyna"}, want: "print-ssh-config is not implemented"},
 	}
@@ -51,6 +52,27 @@ func TestPlannedCommandsReturnExplicitNotImplementedErrors(t *testing.T) {
 				t.Fatalf("Run(%q) error = %q, want %q", test.args, got, test.want)
 			}
 		})
+	}
+}
+
+func TestLogsPrintsTheRequestedNumberOfRecentOpenSSHDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	layout := state.NewLayout(t.TempDir())
+	if err := layout.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.SSHLog, []byte("first\nsecond\nthird\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	application := kamuiapp.New(layout, nil)
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+	if err := command.Run(context.Background(), []string{"kamui", "logs", "--lines", "2"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "second\nthird\n"; got != want {
+		t.Fatalf("logs output = %q, want %q", got, want)
 	}
 }
 
