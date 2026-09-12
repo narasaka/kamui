@@ -15,8 +15,13 @@ Every browser and exact SSH destination gets a user-only profile directory.
 Every Chromium invocation includes that directory, the current Kamui proxy,
 `<-loopback>`, and `--no-first-run`. Reopening repeats the exact profile key;
 Chromium routes the URL to the matching profile process instead of an unrelated
-default-profile process. Gecko starts with `-no-remote -profile PATH`; later
-opens target the same profile with `-profile PATH -new-tab URL`.
+default-profile process. The initially ephemeral loopback proxy address is
+persisted per exact destination and rebound after controller restart, so a
+browser intentionally left open never retains a stale endpoint. If that saved
+port is unexpectedly occupied, startup fails instead of silently moving the
+proxy behind the browser's back. Gecko starts with `-no-remote -profile PATH`;
+when its `.parentlock` shows that profile is already running, later opens target
+the same profile with `-profile PATH -new-tab URL`.
 
 Kamui retains the process handle for a browser it starts. The default stop
 policy leaves the dedicated browser open. With `stopBrowserOnStop` enabled,
