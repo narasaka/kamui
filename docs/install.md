@@ -39,7 +39,7 @@ Maintainers build both architectures and checksums with:
 ```sh
 KAMUI_BUILD_COMMIT=$(git rev-parse HEAD) \
 KAMUI_BUILD_DATE=2026-09-11T00:00:00Z \
-make package VERSION=1.0.0
+make package VERSION=0.0.1
 ```
 
 The Go binaries use `-trimpath`, omit VCS stamping, and clear the Go build ID.
