@@ -19,15 +19,22 @@ Install Kamui, make sure the destination works with the system SSH client, then
 run:
 
 ```sh
-kamui reyna
-# or
+# SSH alias defined in ~/.ssh/config
+kamui my-dev-server
+
+# Direct IP address
 kamui narasaka@192.168.1.50
-# or
+
+# Tailscale MagicDNS name
+kamui narasaka@monitoring.yak-bebop.ts.net
+
+# Ordinary DNS hostname
 kamui narasaka@dev.example.com
 ```
 
-`reyna` can be an entry from `~/.ssh/config`; the IP-address and hostname forms
-work directly without defining an SSH alias first.
+Each value after `kamui` is an OpenSSH destination, not a Kamui subcommand.
+`my-dev-server` is an example SSH alias; the IP-address, MagicDNS, and ordinary
+hostname forms work directly without defining an alias first.
 
 Kamui starts its own non-interactive OpenSSH transport, an ephemeral local
 proxy, and an isolated development-browser profile. It does not need an
@@ -36,8 +43,9 @@ on the remote host. Start remote services however you normally do, then enter
 their unchanged URLs (for example, `http://localhost:3003`) in the dedicated
 browser.
 
-Use `kamui status`, `kamui open reyna URL...`, and `kamui stop reyna` to manage
-the session. `kamui doctor reyna` checks the local installation and SSH path.
+Use `kamui status`, `kamui open my-dev-server URL...`, and
+`kamui stop my-dev-server` to manage the session. `kamui doctor my-dev-server`
+checks the local installation and SSH path.
 If the remote service is absent, the proxy reports a remote connection refusal;
 Kamui never starts project services itself.
 
@@ -46,9 +54,9 @@ Kamui never starts project services itself.
 The primary command accepts exactly one OpenSSH destination:
 
 ```sh
-kamui reyna
+kamui my-dev-server
 kamui narasaka@dev.example.com
-kamui reyna --browser firefox
+kamui my-dev-server --browser firefox
 ```
 
 The destination is passed to OpenSSH as one positional argument. SSH aliases,
@@ -96,7 +104,7 @@ loopback interception are intentionally out of scope.
 an interactive SSH login succeeds, print (but do not install) a snippet:
 
 ```sh
-kamui print-ssh-config reyna
+kamui print-ssh-config my-dev-server
 ```
 
 The snippet uses `%n` to preserve the original alias. The fast, silent hook is

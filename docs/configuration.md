@@ -23,7 +23,7 @@ Example:
   "idleTimeout": "0s",
   "stopBrowserOnStop": false,
   "hosts": {
-    "reyna": {
+    "my-dev-server": {
       "browser": "firefox",
       "openBrowserOnSSH": true,
       "idleTimeout": "30m",
