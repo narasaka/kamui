@@ -3,11 +3,14 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/narasaka/kamui/internal/browser"
@@ -237,7 +240,7 @@ func (a *Application) waitForController(ctx context.Context, ready bool) (contro
 	var lastErr error
 	for {
 		identity, err := a.client.Identity(ctx)
-		if ready && err == nil {
+		if ready && err == nil && identitiesMatch(identity, a.identity) {
 			return identity, nil
 		}
 		if !ready && err != nil && controllerUnavailable(err) {
@@ -314,8 +317,13 @@ func sessionOperation(operation Operation, all bool) (session.Operation, error) 
 }
 
 func controllerUnavailable(err error) bool {
-	text := err.Error()
-	return strings.Contains(text, "read controller token") || strings.Contains(text, "contact Kamui controller")
+	return errors.Is(err, os.ErrNotExist) ||
+		errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE)
 }
 
 // ProcessStarter starts the hidden controller command using the current binary.
