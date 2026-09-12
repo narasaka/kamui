@@ -116,6 +116,30 @@ func TestManagerStopsReconnectsWhenAuthenticationNeedsUser(t *testing.T) {
 	}
 }
 
+func TestManagerUsesUnattendedSSHForHookActivation(t *testing.T) {
+	t.Parallel()
+
+	launcher := &managerLauncher{}
+	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	if _, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, Unattended: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	arguments := launcher.lastArgs()
+	found := false
+	for index := 0; index+1 < len(arguments); index++ {
+		if arguments[index] == "-o" && arguments[index+1] == "BatchMode=yes" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("OpenSSH args = %v, want BatchMode=yes", arguments)
+	}
+}
+
 func TestManagerLaunchesSelectedBrowserAndOpensURLsInItsProfile(t *testing.T) {
 	t.Parallel()
 
@@ -271,6 +295,7 @@ type managerLauncher struct {
 	mu        sync.Mutex
 	starts    int
 	processes []*managerProcess
+	requests  []ssh.StartRequest
 }
 
 func (l *managerLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
@@ -288,6 +313,7 @@ func (l *managerLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
 	l.mu.Lock()
 	l.starts++
 	l.processes = append(l.processes, process)
+	l.requests = append(l.requests, request)
 	l.mu.Unlock()
 	go func() {
 		for {
@@ -299,6 +325,12 @@ func (l *managerLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
 		}
 	}()
 	return process, nil
+}
+
+func (l *managerLauncher) lastArgs() []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return append([]string(nil), l.requests[len(l.requests)-1].Args...)
 }
 
 func (l *managerLauncher) terminateFirst() {

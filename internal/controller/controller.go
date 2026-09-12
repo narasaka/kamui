@@ -62,6 +62,7 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 		SkipBrowser:       command.SkipBrowser,
 		IdleTimeout:       command.IdleTimeout,
 		StopBrowserOnStop: command.StopBrowserOnStop,
+		Unattended:        command.Unattended,
 	}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return session.Result{}, fmt.Errorf("send controller command: %w", err)
@@ -184,6 +185,7 @@ func (s *Server) handle(connection net.Conn) {
 		SkipBrowser:       request.SkipBrowser,
 		IdleTimeout:       request.IdleTimeout,
 		StopBrowserOnStop: request.StopBrowserOnStop,
+		Unattended:        request.Unattended,
 	}
 	if request.Async {
 		_ = json.NewEncoder(connection).Encode(wireResponse{})
@@ -258,6 +260,7 @@ type wireRequest struct {
 	SkipBrowser       bool              `json:"skipBrowser,omitempty"`
 	IdleTimeout       time.Duration     `json:"idleTimeout,omitempty"`
 	StopBrowserOnStop bool              `json:"stopBrowserOnStop,omitempty"`
+	Unattended        bool              `json:"unattended,omitempty"`
 }
 
 type wireStatus struct {

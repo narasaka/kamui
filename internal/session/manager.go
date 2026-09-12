@@ -37,6 +37,7 @@ type Command struct {
 	SkipBrowser       bool
 	IdleTimeout       time.Duration
 	StopBrowserOnStop bool
+	Unattended        bool
 }
 
 // SessionState is the user-visible lifecycle state.
@@ -154,7 +155,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 	if existing := m.sessions[destination.Key()]; existing != nil {
 		state := existing.snapshot().State
 		if state == SessionUnavailable || state == SessionAuthenticationRequired {
-			connection, err := m.transport.Connect(m.ctx, destination.String())
+			connection, err := m.connect(m.ctx, destination, command.Unattended)
 			if err != nil {
 				return Result{}, err
 			}
@@ -169,7 +170,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 		return Result{Session: existing.snapshot()}, nil
 	}
 
-	connection, err := m.transport.Connect(m.ctx, destination.String())
+	connection, err := m.connect(m.ctx, destination, command.Unattended)
 	if err != nil {
 		m.logger.Warn("Kamui session lifecycle", "event", "ssh_bootstrap_failed", "session_key", destination.Key(), "failure_kind", connectFailureKind(err))
 		return Result{}, fmt.Errorf("SSH authentication or connection failed for %s: %w", destination, err)
@@ -216,6 +217,13 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 	m.logger.Info("Kamui session lifecycle", "event", "session_started", "session_key", destination.Key(), "browser", managed.snapshot().Browser)
 	go m.monitor(managed)
 	return Result{Session: managed.snapshot()}, nil
+}
+
+func (m *Manager) connect(ctx context.Context, destination Destination, unattended bool) (*ssh.Connection, error) {
+	if unattended {
+		return m.transport.ConnectUnattended(ctx, destination.String())
+	}
+	return m.transport.Connect(ctx, destination.String())
 }
 
 func (m *Manager) open(ctx context.Context, command Command) (Result, error) {

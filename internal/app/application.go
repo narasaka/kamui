@@ -139,6 +139,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		SkipBrowser:       skipBrowser,
 		IdleTimeout:       idleTimeout,
 		StopBrowserOnStop: stopBrowserOnStop,
+		Unattended:        request.Operation == SSHHook,
 	}
 	call := func() (session.Result, error) {
 		if request.Operation == SSHHook {
