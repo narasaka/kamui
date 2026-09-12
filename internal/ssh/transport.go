@@ -35,6 +35,34 @@ type Snapshot struct {
 	Error error
 }
 
+// FailureKind identifies whether unattended reconnects may be attempted.
+type FailureKind uint8
+
+const (
+	TransientFailure FailureKind = iota
+	AuthenticationFailure
+	ConfigurationFailure
+)
+
+// ConnectError is a classified OpenSSH bootstrap failure.
+type ConnectError struct {
+	Kind        FailureKind
+	Destination string
+	Err         error
+}
+
+func (e *ConnectError) Error() string {
+	layer := "connection"
+	if e.Kind == AuthenticationFailure {
+		layer = "authentication"
+	} else if e.Kind == ConfigurationFailure {
+		layer = "configuration"
+	}
+	return fmt.Sprintf("SSH %s failed for %s: %v", layer, e.Destination, e.Err)
+}
+
+func (e *ConnectError) Unwrap() error { return e.Err }
+
 // StartRequest is one operating-system process invocation.
 type StartRequest struct {
 	Path   string
@@ -68,21 +96,34 @@ type Transport struct {
 
 // Connect starts OpenSSH and returns only after its SOCKS listener is ready.
 func (t Transport) Connect(ctx context.Context, destination string) (*Connection, error) {
+	return t.connect(ctx, destination, false)
+}
+
+// ConnectUnattended reconnects without allowing OpenSSH to prompt on a hidden
+// controller terminal.
+func (t Transport) ConnectUnattended(ctx context.Context, destination string) (*Connection, error) {
+	return t.connect(ctx, destination, true)
+}
+
+func (t Transport) connect(ctx context.Context, destination string, unattended bool) (*Connection, error) {
 	var lastErr error
 	for range 3 {
-		connection, stderr, err := t.connectAttempt(ctx, destination)
+		connection, stderr, err := t.connectAttempt(ctx, destination, unattended)
 		if err == nil {
 			return connection, nil
 		}
 		lastErr = err
 		if !isForwardBindRace(stderr) {
-			return nil, err
+			return nil, classifyConnectError(destination, stderr, err)
 		}
 	}
-	return nil, fmt.Errorf("allocate OpenSSH SOCKS port after retries: %w", lastErr)
+	return nil, &ConnectError{
+		Kind: TransientFailure, Destination: destination,
+		Err: fmt.Errorf("allocate OpenSSH SOCKS port after retries: %w", lastErr),
+	}
 }
 
-func (t Transport) connectAttempt(ctx context.Context, destination string) (*Connection, string, error) {
+func (t Transport) connectAttempt(ctx context.Context, destination string, unattended bool) (*Connection, string, error) {
 	address, err := availableLoopbackAddress()
 	if err != nil {
 		return nil, "", err
@@ -97,16 +138,20 @@ func (t Transport) connectAttempt(ctx context.Context, destination string) (*Con
 		launcher = execLauncher{}
 	}
 	var stderr bytes.Buffer
+	arguments := []string{
+		"-N", "-T", "-D", address,
+		"-o", "ExitOnForwardFailure=yes",
+		"-o", "ServerAliveInterval=15",
+		"-o", "ServerAliveCountMax=3",
+		"-o", "PermitLocalCommand=no",
+	}
+	if unattended {
+		arguments = append(arguments, "-o", "BatchMode=yes")
+	}
+	arguments = append(arguments, destination)
 	request := StartRequest{
-		Path: path,
-		Args: []string{
-			"-N", "-T", "-D", address,
-			"-o", "ExitOnForwardFailure=yes",
-			"-o", "ServerAliveInterval=15",
-			"-o", "ServerAliveCountMax=3",
-			"-o", "PermitLocalCommand=no",
-			destination,
-		},
+		Path:   path,
+		Args:   arguments,
 		Stdin:  defaultReader(t.Stdin),
 		Stdout: defaultWriter(t.Stdout),
 		Stderr: io.MultiWriter(defaultWriter(t.Stderr), &stderr),
@@ -151,6 +196,21 @@ func isForwardBindRace(stderr string) bool {
 	folded := strings.ToLower(stderr)
 	return strings.Contains(folded, "address already in use") ||
 		strings.Contains(folded, "cannot listen to port")
+}
+
+func classifyConnectError(destination, stderr string, err error) error {
+	folded := strings.ToLower(stderr)
+	kind := TransientFailure
+	if strings.Contains(folded, "permission denied") ||
+		strings.Contains(folded, "host key verification failed") ||
+		strings.Contains(folded, "too many authentication failures") {
+		kind = AuthenticationFailure
+	} else if strings.Contains(folded, "bad configuration option") ||
+		strings.Contains(folded, "could not resolve hostname") ||
+		strings.Contains(folded, "hostname contains invalid characters") {
+		kind = ConfigurationFailure
+	}
+	return &ConnectError{Kind: kind, Destination: destination, Err: err}
 }
 
 // Connection is a supervised OpenSSH SOCKS connection.

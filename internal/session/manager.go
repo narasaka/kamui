@@ -139,6 +139,20 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 		return Result{}, errors.New("session manager is closed")
 	}
 	if existing := m.sessions[destination.Key()]; existing != nil {
+		state := existing.snapshot().State
+		if state == SessionUnavailable || state == SessionAuthenticationRequired {
+			connection, err := m.transport.Connect(m.ctx, destination.String())
+			if err != nil {
+				return Result{}, err
+			}
+			existing.mu.Lock()
+			old := existing.connection
+			existing.connection = connection
+			existing.lastError = nil
+			existing.requiresAuth = false
+			existing.mu.Unlock()
+			_ = old.Close()
+		}
 		return Result{Session: existing.snapshot()}, nil
 	}
 
@@ -305,7 +319,7 @@ func (m *Manager) monitor(managed *managedSession) {
 
 		delay := 100 * time.Millisecond
 		for attempt := 0; attempt < attempts; attempt++ {
-			connection, err := m.transport.Connect(managed.ctx, managed.destination.String())
+			connection, err := m.transport.ConnectUnattended(managed.ctx, managed.destination.String())
 			if err == nil {
 				managed.mu.Lock()
 				old := managed.connection
@@ -317,6 +331,12 @@ func (m *Manager) monitor(managed *managedSession) {
 			}
 			managed.mu.Lock()
 			managed.lastError = err
+			var connectError *ssh.ConnectError
+			if errors.As(err, &connectError) && connectError.Kind != ssh.TransientFailure {
+				managed.requiresAuth = true
+				managed.mu.Unlock()
+				return
+			}
 			managed.mu.Unlock()
 			select {
 			case <-managed.ctx.Done():
@@ -327,6 +347,7 @@ func (m *Manager) monitor(managed *managedSession) {
 				delay *= 2
 			}
 		}
+		return
 	}
 }
 

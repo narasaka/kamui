@@ -70,6 +70,26 @@ func TestTransportRetriesWhenSOCKSPortLosesBindRace(t *testing.T) {
 	}
 }
 
+func TestUnattendedReconnectDisablesAuthenticationPrompts(t *testing.T) {
+	t.Parallel()
+
+	launcher := &readyLauncher{}
+	connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).ConnectUnattended(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	wantPair := false
+	for index := 0; index+1 < len(launcher.request.Args); index++ {
+		if launcher.request.Args[index] == "-o" && launcher.request.Args[index+1] == "BatchMode=yes" {
+			wantPair = true
+		}
+	}
+	if !wantPair {
+		t.Fatalf("unattended OpenSSH args = %v, want BatchMode=yes", launcher.request.Args)
+	}
+}
+
 func TestConnectionDialsTargetsThroughSOCKS5(t *testing.T) {
 	t.Parallel()
 

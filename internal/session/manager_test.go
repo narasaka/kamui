@@ -2,6 +2,8 @@ package session_test
 
 import (
 	"context"
+	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -46,6 +48,43 @@ func TestManagerEnsuresAndReusesOneNetworkingSession(t *testing.T) {
 	}
 	if status.Session.State != session.SessionConnected {
 		t.Fatalf("session state = %v, want connected", status.Session.State)
+	}
+}
+
+func TestManagerStopsReconnectsWhenAuthenticationNeedsUser(t *testing.T) {
+	t.Parallel()
+
+	launcher := &authenticationLauncher{}
+	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	if _, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination}); err != nil {
+		t.Fatal(err)
+	}
+	launcher.terminateConnected()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status, err := manager.Execute(context.Background(), session.Command{Operation: session.Status, Destination: destination})
+		if err == nil && status.Session.State == session.SessionAuthenticationRequired {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("state = %v, error %v; want authentication required", status.Session.State, err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	if got := launcher.count(); got != 2 {
+		t.Fatalf("OpenSSH starts = %d, want initial plus one authentication failure", got)
+	}
+	launcher.allowAuthentication()
+	result, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
+	if err != nil {
+		t.Fatalf("interactive rerun after authentication: %v", err)
+	}
+	if result.Session.State != session.SessionConnected || launcher.count() != 3 {
+		t.Fatalf("rerun state=%v starts=%d, want connected after third start", result.Session.State, launcher.count())
 	}
 }
 
@@ -200,6 +239,79 @@ type sessionBrowserLauncher struct {
 	mu    sync.Mutex
 	calls int
 }
+
+type authenticationLauncher struct {
+	mu            sync.Mutex
+	starts        int
+	process       *managerProcess
+	authenticated bool
+}
+
+func (l *authenticationLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	l.mu.Lock()
+	l.starts++
+	starts := l.starts
+	l.mu.Unlock()
+	if starts > 1 && !l.isAuthenticated() {
+		_, _ = io.WriteString(request.Stderr, "Permission denied (publickey).\n")
+		return authExitedProcess{}, nil
+	}
+	var address string
+	for index, argument := range request.Args {
+		if argument == "-D" && index+1 < len(request.Args) {
+			address = request.Args[index+1]
+		}
+	}
+	listener, err := net.Listen("tcp4", address)
+	if err != nil {
+		return nil, err
+	}
+	process := &managerProcess{listener: listener, done: make(chan struct{})}
+	l.mu.Lock()
+	l.process = process
+	l.mu.Unlock()
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = connection.Close()
+		}
+	}()
+	return process, nil
+}
+
+func (l *authenticationLauncher) isAuthenticated() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.authenticated
+}
+
+func (l *authenticationLauncher) allowAuthentication() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.authenticated = true
+}
+
+func (l *authenticationLauncher) terminateConnected() {
+	l.mu.Lock()
+	process := l.process
+	l.mu.Unlock()
+	_ = process.Kill()
+}
+
+func (l *authenticationLauncher) count() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.starts
+}
+
+type authExitedProcess struct{}
+
+func (authExitedProcess) Wait() error            { return errors.New("exit status 255") }
+func (authExitedProcess) Signal(os.Signal) error { return os.ErrProcessDone }
+func (authExitedProcess) Kill() error            { return os.ErrProcessDone }
 
 func (l *sessionBrowserLauncher) Launch(context.Context, string, []string) error {
 	l.mu.Lock()
