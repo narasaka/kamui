@@ -25,12 +25,11 @@ func main() {
 		}
 		return
 	}
-	root, err := state.DefaultRoot()
+	layout, err := state.DefaultLayout()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	layout := state.NewLayout(root)
 	application := app.New(layout, app.ProcessStarter{
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	})
@@ -42,10 +41,11 @@ func main() {
 }
 
 func runController(arguments []string) error {
-	if len(arguments) != 2 || arguments[0] != "--state-root" || arguments[1] == "" {
-		return fmt.Errorf("internal controller requires --state-root PATH")
+	if len(arguments) != 4 || arguments[0] != "--state-root" || arguments[1] == "" ||
+		arguments[2] != "--runtime-root" || arguments[3] == "" {
+		return fmt.Errorf("internal controller requires --state-root PATH --runtime-root PATH")
 	}
-	layout := state.NewLayout(arguments[1])
+	layout := state.NewLayoutWithRuntime(arguments[1], arguments[3])
 	if err := layout.Ensure(); err != nil {
 		return err
 	}

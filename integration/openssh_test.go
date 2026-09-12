@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/narasaka/kamui/internal/controller"
+	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/ssh"
 	"github.com/narasaka/kamui/internal/state"
@@ -80,6 +81,41 @@ func TestColdStartWithDisposableOpenSSHServer(t *testing.T) {
 	}
 }
 
+func TestRemoteListenerDiscoveryWithDisposableOpenSSHServer(t *testing.T) {
+	fixture := startDisposableOpenSSH(t)
+	clientConfig := filepath.Join(fixture.root, "discovery_ssh_config")
+	configuration := fmt.Sprintf(`Host kamui-discovery-alias
+    HostName 127.0.0.1
+    User %s
+    Port %d
+    IdentityFile %s
+    IdentitiesOnly yes
+    UserKnownHostsFile %s
+    StrictHostKeyChecking no
+`, fixture.username, fixture.port, fixture.clientKey, filepath.Join(fixture.root, "known_hosts"))
+	if err := os.WriteFile(clientConfig, []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := writeSSHWrapper(t, fixture.root, clientConfig)
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	want := uint16(listener.Addr().(*net.TCPAddr).Port)
+
+	ports, err := (mirror.SSHDiscoverer{SSHPath: wrapper}).ListeningPorts(context.Background(), "kamui-discovery-alias")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, port := range ports {
+		if port == want {
+			return
+		}
+	}
+	t.Fatalf("remote listening ports %v omit test listener %d", ports, want)
+}
+
 func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t *testing.T) {
 	fixture := startDisposableOpenSSH(t)
 	testHome, err := os.MkdirTemp("/tmp", "kamui-hook-home-")
@@ -89,10 +125,18 @@ func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t
 	t.Cleanup(func() { _ = os.RemoveAll(testHome) })
 	configRoot := filepath.Join(testHome, ".config")
 	stateRoot := filepath.Join(configRoot, "kamui")
+	hookEnvironment := fmt.Sprintf("HOME=%q XDG_CONFIG_HOME=%q", testHome, configRoot)
+	var layout state.Layout
 	if runtime.GOOS == "darwin" {
 		stateRoot = filepath.Join(testHome, "Library", "Application Support", "kamui")
+		layout = state.NewLayout(stateRoot)
+	} else {
+		xdgStateRoot := filepath.Join(testHome, ".local", "state")
+		xdgRuntimeRoot := filepath.Join(testHome, "runtime")
+		stateRoot = filepath.Join(xdgStateRoot, "kamui")
+		layout = state.NewLayoutWithRuntime(stateRoot, filepath.Join(xdgRuntimeRoot, "kamui"))
+		hookEnvironment += fmt.Sprintf(" XDG_STATE_HOME=%q XDG_RUNTIME_DIR=%q", xdgStateRoot, xdgRuntimeRoot)
 	}
-	layout := state.NewLayout(stateRoot)
 	kamuiBinary := filepath.Join(fixture.root, "kamui")
 	build := exec.Command("go", "build", "-o", kamuiBinary, "github.com/narasaka/kamui/cmd/kamui")
 	if output, err := build.CombinedOutput(); err != nil {
@@ -123,7 +167,7 @@ func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t
     UserKnownHostsFile %s
     StrictHostKeyChecking no
     PermitLocalCommand yes
-    LocalCommand env HOME=%q XDG_CONFIG_HOME=%q %q ssh-hook %%n
+    LocalCommand env %s %q ssh-hook %%n
     ControlMaster auto
     ControlPath %q
     ControlPersist 10
@@ -137,7 +181,7 @@ Host kamui-failed-alias
     StrictHostKeyChecking no
     ControlMaster no
 `, fixture.username, fixture.port, fixture.clientKey, filepath.Join(fixture.root, "known_hosts"),
-		testHome, configRoot, kamuiBinary, controlPath, fixture.username, fixture.port,
+		hookEnvironment, kamuiBinary, controlPath, fixture.username, fixture.port,
 		filepath.Join(fixture.root, "missing-key"), filepath.Join(fixture.root, "known_hosts"))
 	if err := os.WriteFile(clientConfig, []byte(configuration), 0o600); err != nil {
 		t.Fatal(err)

@@ -132,11 +132,12 @@ func (t Transport) ConnectUnattended(ctx context.Context, destination string) (*
 }
 
 func (t Transport) connect(ctx context.Context, destination string, unattended bool) (*Connection, error) {
+	path, err := resolveExecutable(t.SSHPath)
+	if err != nil {
+		return nil, fmt.Errorf("find OpenSSH executable: %w", err)
+	}
+	t.SSHPath = path
 	if !unattended && t.Inspector != nil {
-		path := t.SSHPath
-		if path == "" {
-			path = "/usr/bin/ssh"
-		}
 		if enabled, err := t.Inspector.AgentForwarding(ctx, path, destination); err == nil && enabled {
 			fmt.Fprintf(io.MultiWriter(defaultWriter(t.Stderr), defaultWriter(t.BackgroundStderr)), "WARNING: SSH agent forwarding is enabled for %s; the remote host can access the forwarded agent.\n", destination)
 		}
@@ -165,9 +166,6 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 	}
 
 	path := t.SSHPath
-	if path == "" {
-		path = "/usr/bin/ssh"
-	}
 	launcher := t.Launcher
 	if launcher == nil {
 		launcher = execLauncher{}

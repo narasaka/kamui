@@ -1,50 +1,70 @@
 # Install, upgrade, and uninstall
 
-Kamui currently supports macOS on Apple Silicon and Intel.
+Kamui supports macOS and Linux on ARM64 and AMD64. The machine running Kamui
+needs OpenSSH; the dedicated-browser workflow also needs a supported native
+browser. An SSH destination needs only an SSH server with TCP forwarding.
+`kamui mirror` additionally needs `ss`, `lsof`, or `netstat` on the destination.
+
+## Go installation
+
+With the Go toolchain installed, this is the platform-neutral installation
+path:
+
+```sh
+go install github.com/narasaka/kamui/cmd/kamui@latest
+```
+
+The command installs `kamui` into `$GOBIN`, or into `$(go env GOPATH)/bin` when
+`GOBIN` is unset. Ensure that directory is on `PATH`, then verify the install:
+
+```sh
+kamui --version
+```
+
+Run the same `go install` command to upgrade. To uninstall this installation,
+remove the `kamui` executable from the Go binary directory.
 
 ## Homebrew installation
 
-Install the current tagged release from the
-[`narasaka/homebrew-tap`](https://github.com/narasaka/homebrew-tap) tap. The
-fully qualified name lets Homebrew add the tap automatically:
+Homebrew and Linuxbrew can build the current tagged release from source:
 
 ```sh
 brew install narasaka/tap/kamui
 ```
 
-Upgrade it with:
+Upgrade or uninstall it with:
 
 ```sh
 brew update
 brew upgrade narasaka/tap/kamui
-```
-
-The next controller-backed invocation authenticates the resident Kamui
-controller and compares its protocol/build identity with the new executable. A
-stale controller is gracefully replaced and the command is retried. The
-destination requested by that command is recreated automatically; other
-in-memory sessions are not reconstructed and must be started again. An
-upgrade-triggered handoff is recorded as `controller_upgrade_restart` in
-`~/Library/Application Support/kamui/logs/controller.jsonl`.
-
-Uninstall the binary while preserving configuration and development profiles:
-
-```sh
 brew uninstall kamui
 ```
 
-To optionally remove all Kamui configuration, runtime state, and dedicated
-browser profiles after uninstalling, move this directory to the Trash:
+The next controller-backed invocation after an upgrade authenticates the
+resident controller, compares its protocol/build identity with the new
+executable, gracefully replaces a stale controller, and retries the command.
+The requested destination is recreated automatically; other in-memory sessions
+must be started again.
+
+## User data
+
+Kamui uses these default paths:
 
 ```text
-~/Library/Application Support/kamui
+macOS: ~/Library/Application Support/kamui
+Linux configuration: $XDG_CONFIG_HOME/kamui (default: ~/.config/kamui)
+Linux state and profiles: $XDG_STATE_HOME/kamui (default: ~/.local/state/kamui)
+Linux controller runtime: $XDG_RUNTIME_DIR/kamui
 ```
+
+When `XDG_RUNTIME_DIR` is unavailable, Linux controller files use the
+`runtime` directory beneath the Kamui state root. Stop active sessions with
+`kamui stop --all` before removing these directories.
 
 ## Publishing a release
 
 The tag-driven release workflow requires a `HOMEBREW_TAP_TOKEN` repository
-secret. Use a fine-grained personal access token with contents write access only
-to `narasaka/homebrew-tap`.
+secret with contents write access only to `narasaka/homebrew-tap`.
 
 After the release commit is on `main`, push an annotated semantic-version tag:
 
@@ -54,13 +74,11 @@ git push origin v0.0.2
 ```
 
 The workflow validates that the tag belongs to `main`, runs all checks, builds
-and publishes both macOS binaries, and updates the Homebrew formula URL, source
-checksum, version metadata, commit, and build date. Do not update the formula
-manually before the tag exists.
+Darwin and Linux binaries for ARM64 and AMD64, publishes them with checksums,
+and updates the Homebrew formula. Do not update the published formula manually
+before the tag exists.
 
-## Reproducible release binaries
-
-Maintainers build both architectures and checksums with:
+Maintainers can reproduce all release binaries with:
 
 ```sh
 KAMUI_BUILD_COMMIT=$(git rev-parse HEAD) \

@@ -48,8 +48,9 @@ func (c *Catalog) Detect(ctx context.Context) ([]Installation, error) {
 // Select discovers supported browsers and returns the highest-precedence match.
 func (c *Catalog) Select(ctx context.Context, selection Selection) (Selected, error) {
 	explicit := strings.ToLower(strings.TrimSpace(selection.Explicit))
+	base := strings.ToLower(filepath.Base(selection.Explicit))
 	if explicit == "tor" || explicit == "tor-browser" || explicit == "tor browser" ||
-		strings.EqualFold(filepath.Base(selection.Explicit), "Tor Browser") || strings.Contains(explicit, "tor browser.app") {
+		base == "tor-browser" || base == "tor browser" || strings.Contains(explicit, "tor browser.app") {
 		return Selected{}, fmt.Errorf("Tor Browser is not supported because changing its routing would violate its privacy guarantees")
 	}
 	if filepath.IsAbs(selection.Explicit) {

@@ -18,7 +18,7 @@ Running `kamui` without arguments prints command help and exits successfully.
 `BROWSER` may be a stable supported browser identifier or an absolute browser
 executable path. An ambiguous path requires an explicit browser family.
 
-`MODE` is `remote-only` (the default) or `local-first`. Local-first tries Mac
+`MODE` is `remote-only` (the default) or `local-first`. Local-first tries local
 IPv4 and IPv6 loopback before the remote host and falls back only after both
 local connection attempts are refused.
 
@@ -31,7 +31,7 @@ the exact `v0.0.4` behavior and prints a concise notice.
 
 - `status [SSH_DESTINATION]` reports all sessions or one exact destination.
 - `mirror SSH_DESTINATION` enables transparent TCP mirroring without launching
-  a browser. It discovers remote listeners and binds the same port on both Mac
+  a browser. It discovers remote listeners and binds the same port on both local
   loopback families. Running it for an existing browser session adds the
   capability in place.
 - `stop SSH_DESTINATION` stops one session; `stop --all` stops all sessions.

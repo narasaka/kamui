@@ -13,8 +13,12 @@ type Diagnostics struct {
 
 // Executable resolves the OpenSSH executable used by diagnostics.
 func (d Diagnostics) Executable() (string, error) {
-	if d.Path != "" {
-		return d.Path, nil
+	return resolveExecutable(d.Path)
+}
+
+func resolveExecutable(configured string) (string, error) {
+	if configured != "" {
+		return configured, nil
 	}
 	return exec.LookPath("ssh")
 }

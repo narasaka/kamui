@@ -74,7 +74,7 @@ func TestNoArgumentsShowsCommandHelp(t *testing.T) {
 		"USAGE:\n",
 		"COMMANDS:\n",
 		"logs              show OpenSSH background diagnostics\n",
-		"mirror            mirror remote TCP listeners on Mac loopback\n",
+		"mirror            mirror remote TCP listeners on local loopback\n",
 		"status            show session status\n",
 		"stop              stop one or all sessions\n",
 		"open              open URLs in a session browser\n",
@@ -172,7 +172,7 @@ func TestPrimaryCommandEnablesLocalFirstLoopbackRouting(t *testing.T) {
 	if string(body) != "Mac loopback" {
 		t.Fatalf("body = %q, want Mac loopback", body)
 	}
-	if !strings.Contains(output.String(), "may access genuine Mac localhost services in local-first mode") {
+	if !strings.Contains(output.String(), "may access genuine local-machine localhost services in local-first mode") {
 		t.Fatalf("output = %q, want local-first security warning", output.String())
 	}
 	var repeatedOutput bytes.Buffer
@@ -180,7 +180,7 @@ func TestPrimaryCommandEnablesLocalFirstLoopbackRouting(t *testing.T) {
 	if err := repeated.Run(context.Background(), []string{"kamui", "reyna", "--browser-loopback", "local-first"}); err != nil {
 		t.Fatalf("repeat primary command: %v", err)
 	}
-	if !strings.Contains(repeatedOutput.String(), "may access genuine Mac localhost services in local-first mode") {
+	if !strings.Contains(repeatedOutput.String(), "may access genuine local-machine localhost services in local-first mode") {
 		t.Fatalf("repeated output = %q, want persistent local-first security warning", repeatedOutput.String())
 	}
 }

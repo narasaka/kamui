@@ -1,6 +1,6 @@
 # ADR 0002: Prefer Homebrew source builds for the initial distribution
 
-- Status: accepted
+- Status: superseded in part by ADR 0008
 - Date: 2026-09-11
 
 ## Context

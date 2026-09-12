@@ -110,6 +110,7 @@ jobs:
             abort "expected one #{pattern.inspect} in #{path}, found #{matches}" unless matches == 1
             formula.sub!(pattern, replacement)
           end
+          formula.gsub!(/^  depends_on :macos\n/, "")
           File.write(path, formula)
           RUBY
 

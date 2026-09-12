@@ -26,7 +26,7 @@ jobs:
         run: go vet ./...
       - name: Test
         run: go test -race ./...
-      - name: Build macOS release binaries
+      - name: Build Unix release binaries
         if: runner.os == 'macOS'
         run: scripts/package.sh ci
 
@@ -49,3 +49,26 @@ jobs:
           KAMUI_BROWSER_TESTS: "1"
           KAMUI_REQUIRED_BROWSERS: "chrome,brave,firefox"
         run: go test -race ./integration -run 'TestInstalledBrowsersUseKamuiProxy/(chrome|brave|firefox)$|TestChrome' -count=1 -v
+
+  linux-browser-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Linux SSH test dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends openssh-server iproute2
+          sudo install -d -m 0755 /run/sshd
+      - name: Require native Linux browsers from the runner image
+        run: |
+          command -v google-chrome
+          command -v firefox
+      - name: Gate native Linux browser proxying and OpenSSH discovery
+        env:
+          KAMUI_BROWSER_TESTS: "1"
+          KAMUI_REQUIRED_BROWSERS: "chrome,firefox"
+        run: go test -race ./integration -run 'TestNativeLinuxBrowsersUseKamuiProxy/(chrome|firefox)$|TestRemoteListenerDiscoveryWithDisposableOpenSSHServer' -count=1 -v

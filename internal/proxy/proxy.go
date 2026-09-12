@@ -34,7 +34,7 @@ type LoopbackMode uint8
 const (
 	// RemoteOnly sends explicit loopback destinations through SSH.
 	RemoteOnly LoopbackMode = iota
-	// LocalFirst prefers Mac loopback before considering the remote host.
+	// LocalFirst prefers local-machine loopback before considering the remote host.
 	LocalFirst
 )
 
@@ -64,7 +64,7 @@ type Options struct {
 	LoopbackMode      LoopbackMode
 }
 
-// RunningProxy is a live smart proxy bound to Mac loopback.
+// RunningProxy is a live smart proxy bound to local-machine loopback.
 type RunningProxy struct {
 	addr      netip.AddrPort
 	server    *http.Server
@@ -355,7 +355,7 @@ func (h *handler) dialLocalLoopback(ctx context.Context, network, ipv4Address st
 	if ipv6Err == nil {
 		return connection, nil
 	}
-	return nil, fmt.Errorf("Mac loopback unavailable over IPv4 (%v) and IPv6: %w", ipv4Err, ipv6Err)
+	return nil, fmt.Errorf("local loopback unavailable over IPv4 (%v) and IPv6: %w", ipv4Err, ipv6Err)
 }
 
 func (h *handler) dialRemoteLoopback(ctx context.Context, network, ipv4Address string) (net.Conn, error) {

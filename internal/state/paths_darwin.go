@@ -16,3 +16,12 @@ func DefaultRoot() (string, error) {
 	}
 	return filepath.Join(home, "Library", "Application Support", "kamui"), nil
 }
+
+// DefaultLayout returns Kamui's standard macOS filesystem layout.
+func DefaultLayout() (Layout, error) {
+	root, err := DefaultRoot()
+	if err != nil {
+		return Layout{}, err
+	}
+	return NewLayout(root), nil
+}

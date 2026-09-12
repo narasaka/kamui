@@ -12,4 +12,4 @@ scope: concise description
 
 Keep networking, SSH, browser, controller, and CLI concerns in their respective
 packages. Do not log URL paths, query strings, HTTP headers, cookies, or bodies.
-All proxy TCP listeners must bind to Mac loopback only.
+All proxy TCP listeners must bind to local loopback only.

@@ -85,20 +85,3 @@ func (a *geckoAdapter) Close(ctx context.Context, profile Profile) error {
 	}
 	return stopper.Stop(ctx, profile.Installation.Executable, []string{"-profile", profile.Path})
 }
-
-// DefaultGeckoAdapters returns Gecko-family adapters in deterministic order.
-func DefaultGeckoAdapters(launcher Launcher) []Adapter {
-	return []Adapter{
-		NewGeckoAdapter("firefox", browserPaths("Firefox.app/Contents/MacOS/firefox"), launcher),
-		NewGeckoAdapter("firefox-developer-edition", browserPaths("Firefox Developer Edition.app/Contents/MacOS/firefox"), launcher),
-		NewGeckoAdapter("zen", browserPaths("Zen.app/Contents/MacOS/zen"), launcher),
-		NewGeckoAdapter("librewolf", browserPaths("LibreWolf.app/Contents/MacOS/librewolf"), launcher),
-		NewGeckoAdapter("floorp", browserPaths("Floorp.app/Contents/MacOS/floorp"), launcher),
-	}
-}
-
-// DefaultAdapters returns every initially supported browser adapter.
-func DefaultAdapters(launcher Launcher) []Adapter {
-	adapters := DefaultChromiumAdapters(launcher)
-	return append(adapters, DefaultGeckoAdapters(launcher)...)
-}
