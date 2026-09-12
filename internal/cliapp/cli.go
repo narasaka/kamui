@@ -43,7 +43,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	command := &cli.Command{
 		Name:      "kamui",
 		Version:   version.Version,
-		Usage:     "use a remote SSH host's loopback services in a development browser",
+		Usage:     "use a remote SSH host's loopback services on a Mac",
 		ArgsUsage: "SSH_DESTINATION",
 		Reader:    streams.In,
 		Writer:    streams.Out,
