@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/netip"
 	"sort"
@@ -61,6 +63,7 @@ type ManagerOptions struct {
 	Transport   ssh.Transport
 	Browsers    *browser.Catalog
 	ProfileRoot string
+	Logger      *slog.Logger
 }
 
 // Result is the outcome of a lifecycle command.
@@ -79,6 +82,7 @@ type Manager struct {
 	cancel      context.CancelFunc
 	sessions    map[string]*managedSession
 	closed      bool
+	logger      *slog.Logger
 }
 
 type managedSession struct {
@@ -104,6 +108,10 @@ func NewManager(transport ssh.Transport) *Manager {
 // NewManagerWithOptions creates a manager with browser lifecycle support.
 func NewManagerWithOptions(options ManagerOptions) *Manager {
 	ctx, cancel := context.WithCancel(context.Background())
+	logger := options.Logger
+	if logger == nil {
+		logger = slog.New(slog.NewJSONHandler(io.Discard, nil))
+	}
 	return &Manager{
 		transport:   options.Transport,
 		browsers:    options.Browsers,
@@ -111,6 +119,7 @@ func NewManagerWithOptions(options ManagerOptions) *Manager {
 		ctx:         ctx,
 		cancel:      cancel,
 		sessions:    make(map[string]*managedSession),
+		logger:      logger,
 	}
 }
 
@@ -162,6 +171,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 
 	connection, err := m.transport.Connect(m.ctx, destination.String())
 	if err != nil {
+		m.logger.Warn("Kamui session lifecycle", "event", "ssh_bootstrap_failed", "session_key", destination.Key(), "failure_kind", connectFailureKind(err))
 		return Result{}, fmt.Errorf("SSH authentication or connection failed for %s: %w", destination, err)
 	}
 	sessionContext, cancel := context.WithCancel(m.ctx)
@@ -203,6 +213,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 		managed.browserProfile = profile
 	}
 	m.sessions[destination.Key()] = managed
+	m.logger.Info("Kamui session lifecycle", "event", "session_started", "session_key", destination.Key(), "browser", managed.snapshot().Browser)
 	go m.monitor(managed)
 	return Result{Session: managed.snapshot()}, nil
 }
@@ -267,6 +278,7 @@ func (m *Manager) stop(destination Destination) error {
 		return fmt.Errorf("no Kamui session for %s", destination)
 	}
 	delete(m.sessions, key)
+	m.logger.Info("Kamui session lifecycle", "event", "session_stopped", "session_key", key)
 	return managed.close()
 }
 
@@ -344,6 +356,7 @@ func (m *Manager) monitor(managed *managedSession) {
 
 		delay := 100 * time.Millisecond
 		for attempt := 0; attempt < attempts; attempt++ {
+			m.logger.Info("Kamui session lifecycle", "event", "ssh_reconnect_attempt", "session_key", managed.destination.Key(), "attempt", attempt+1)
 			connection, err := m.transport.ConnectUnattended(managed.ctx, managed.destination.String())
 			if err == nil {
 				managed.mu.Lock()
@@ -352,6 +365,7 @@ func (m *Manager) monitor(managed *managedSession) {
 				managed.lastError = nil
 				managed.mu.Unlock()
 				_ = old.Close()
+				m.logger.Info("Kamui session lifecycle", "event", "ssh_reconnected", "session_key", managed.destination.Key())
 				break
 			}
 			managed.mu.Lock()
@@ -360,6 +374,7 @@ func (m *Manager) monitor(managed *managedSession) {
 			if errors.As(err, &connectError) && connectError.Kind != ssh.TransientFailure {
 				managed.requiresAuth = true
 				managed.mu.Unlock()
+				m.logger.Warn("Kamui session lifecycle", "event", "ssh_authentication_required", "session_key", managed.destination.Key(), "failure_kind", connectFailureKind(err))
 				return
 			}
 			managed.mu.Unlock()
@@ -385,7 +400,23 @@ func (m *Manager) expire(managed *managedSession) {
 	}
 	delete(m.sessions, key)
 	m.mu.Unlock()
+	m.logger.Info("Kamui session lifecycle", "event", "session_expired", "session_key", key)
 	_ = managed.close()
+}
+
+func connectFailureKind(err error) string {
+	var connectError *ssh.ConnectError
+	if !errors.As(err, &connectError) {
+		return "unknown"
+	}
+	switch connectError.Kind {
+	case ssh.AuthenticationFailure:
+		return "authentication"
+	case ssh.ConfigurationFailure:
+		return "configuration"
+	default:
+		return "transient"
+	}
 }
 
 // Close stops all proxies and child processes.

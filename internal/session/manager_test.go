@@ -1,9 +1,11 @@
 package session_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -49,6 +51,31 @@ func TestManagerEnsuresAndReusesOneNetworkingSession(t *testing.T) {
 	}
 	if status.Session.State != session.SessionConnected {
 		t.Fatalf("session state = %v, want connected", status.Session.State)
+	}
+}
+
+func TestManagerWritesStructuredLifecycleLogsWithoutRawDestination(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport: ssh.Transport{Launcher: &managerLauncher{}, ReadinessTimeout: time.Second},
+		Logger:    slog.New(slog.NewJSONHandler(&logs, nil)),
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("narasaka@private.example.com")
+	if _, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Execute(context.Background(), session.Command{Operation: session.Stop, Destination: destination}); err != nil {
+		t.Fatal(err)
+	}
+	got := logs.String()
+	if !strings.Contains(got, `"event":"session_started"`) || !strings.Contains(got, `"session_key":`) {
+		t.Fatalf("structured logs = %q, want session event and safe key", got)
+	}
+	if strings.Contains(got, destination.String()) {
+		t.Fatalf("structured logs exposed raw destination: %q", got)
 	}
 }
 

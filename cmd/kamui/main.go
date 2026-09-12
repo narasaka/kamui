@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/narasaka/kamui/internal/app"
@@ -45,6 +47,14 @@ func runController(arguments []string) error {
 		return fmt.Errorf("internal controller requires --state-root PATH")
 	}
 	layout := state.NewLayout(arguments[1])
+	if err := layout.Ensure(); err != nil {
+		return err
+	}
+	logFile, err := os.OpenFile(filepath.Join(layout.Logs, "controller.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open controller log: %w", err)
+	}
+	defer logFile.Close()
 	manager := session.NewManagerWithOptions(session.ManagerOptions{
 		Transport: ssh.Transport{
 			Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
@@ -52,6 +62,7 @@ func runController(arguments []string) error {
 		},
 		Browsers:    browser.NewCatalog(browser.DefaultAdapters(nil)),
 		ProfileRoot: layout.Profiles,
+		Logger:      slog.New(slog.NewJSONHandler(logFile, nil)),
 	})
 	defer manager.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
