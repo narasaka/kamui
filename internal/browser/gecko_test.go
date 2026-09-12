@@ -50,3 +50,25 @@ user_pref("network.proxy.allow_hijacking_localhost", true);
 		t.Fatalf("launch = %q %#v, want %q %#v", launcher.path, launcher.args, installation.Executable, wantArgs)
 	}
 }
+
+func TestGeckoReopensAProfileThatIsAlreadyLocked(t *testing.T) {
+	t.Parallel()
+
+	launcher := &recordingLauncher{}
+	adapter := browser.NewGeckoAdapter("firefox", nil, launcher)
+	profile := browser.Profile{
+		Path:         t.TempDir(),
+		Session:      browser.Session{Proxy: netip.MustParseAddrPort("127.0.0.1:52144")},
+		Installation: browser.Installation{ID: "firefox", Executable: "/Applications/Firefox.app/Contents/MacOS/firefox"},
+	}
+	if err := os.WriteFile(filepath.Join(profile.Path, ".parentlock"), []byte("active"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:3003"}); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"-profile", profile.Path, "-new-tab", "http://localhost:3003"}
+	if !reflect.DeepEqual(launcher.args, want) {
+		t.Fatalf("locked-profile launch args = %#v, want %#v", launcher.args, want)
+	}
+}

@@ -84,6 +84,11 @@ user_pref("network.proxy.allow_hijacking_localhost", true);
 }
 
 func (a *geckoAdapter) Launch(ctx context.Context, profile Profile, urls []string) error {
+	if _, err := os.Lstat(filepath.Join(profile.Path, ".parentlock")); err == nil {
+		return a.Open(ctx, profile, urls)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect %s profile lock: %w", a.id, err)
+	}
 	args := []string{"-no-remote", "-profile", profile.Path}
 	args = append(args, urls...)
 	if err := a.launcher.Launch(ctx, profile.Installation.Executable, args); err != nil {
