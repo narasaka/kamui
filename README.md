@@ -78,6 +78,7 @@ kamui stop --all
 kamui open SSH_DESTINATION [URL ...]
 kamui doctor SSH_DESTINATION
 kamui browsers
+kamui logs [--follow] [--lines N]
 kamui ssh-hook SSH_DESTINATION
 kamui print-ssh-config SSH_ALIAS
 ```
@@ -131,6 +132,9 @@ your SSH configuration yourself.
 - Rerun `kamui DESTINATION` in a terminal if status says authentication is
   required after a network change. Background retries never hide prompts.
 - Use `kamui browsers` to see stable browser identifiers and executable paths.
+- Use `kamui logs` to print the latest OpenSSH background diagnostics, or
+  `kamui logs --follow` to stream them. The underlying user-only log is at
+  `~/Library/Application Support/kamui/logs/openssh.log` on macOS.
 - Use `kamui stop --all` before removing runtime state.
 
 ## Development

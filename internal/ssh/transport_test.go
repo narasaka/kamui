@@ -57,6 +57,85 @@ func TestTransportStartsSafeOpenSSHAndWaitsForSOCKSReadiness(t *testing.T) {
 	}
 }
 
+func TestTransportRoutesPostConnectOpenSSHErrorsOnlyToBackgroundLog(t *testing.T) {
+	t.Parallel()
+
+	launcher := &readyLauncher{}
+	var terminal, background bytes.Buffer
+	transport := ssh.Transport{
+		Launcher:         launcher,
+		Stderr:           &terminal,
+		BackgroundStderr: &background,
+		ReadinessTimeout: time.Second,
+	}
+	connection, err := transport.Connect(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+
+	message := "channel 1: open failed: connect failed: dial tcp 127.0.0.1:3000: connect: connection refused\n"
+	if _, err := io.WriteString(launcher.request.Stderr, message); err != nil {
+		t.Fatal(err)
+	}
+	if got := terminal.String(); got != "" {
+		t.Fatalf("terminal stderr after readiness = %q, want no output", got)
+	}
+	if got := background.String(); got != message {
+		t.Fatalf("background stderr = %q, want %q", got, message)
+	}
+}
+
+func TestUnattendedTransportNeverWritesOpenSSHErrorsToTerminal(t *testing.T) {
+	t.Parallel()
+
+	launcher := &diagnosticReadyLauncher{message: "Permission denied (publickey).\n"}
+	var terminal, background bytes.Buffer
+	transport := ssh.Transport{
+		Launcher:         launcher,
+		Stderr:           &terminal,
+		BackgroundStderr: &background,
+		ReadinessTimeout: time.Second,
+	}
+	connection, err := transport.ConnectUnattended(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+
+	if got := terminal.String(); got != "" {
+		t.Fatalf("terminal stderr = %q, want no unattended output", got)
+	}
+	if got := background.String(); got != launcher.message {
+		t.Fatalf("background stderr = %q, want %q", got, launcher.message)
+	}
+}
+
+func TestInteractiveTransportCopiesBootstrapDiagnosticsToTerminalAndLog(t *testing.T) {
+	t.Parallel()
+
+	launcher := &diagnosticReadyLauncher{message: "The authenticity of host cannot be established.\n"}
+	var terminal, background bytes.Buffer
+	transport := ssh.Transport{
+		Launcher:         launcher,
+		Stderr:           &terminal,
+		BackgroundStderr: &background,
+		ReadinessTimeout: time.Second,
+	}
+	connection, err := transport.Connect(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+
+	if got := terminal.String(); got != launcher.message {
+		t.Fatalf("terminal bootstrap stderr = %q, want %q", got, launcher.message)
+	}
+	if got := background.String(); got != launcher.message {
+		t.Fatalf("background bootstrap stderr = %q, want %q", got, launcher.message)
+	}
+}
+
 func TestTransportRetriesWhenSOCKSPortLosesBindRace(t *testing.T) {
 	t.Parallel()
 
@@ -181,6 +260,18 @@ type readyLauncher struct {
 	request ssh.StartRequest
 	address string
 	waitErr error
+}
+
+type diagnosticReadyLauncher struct {
+	readyLauncher
+	message string
+}
+
+func (l *diagnosticReadyLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	if _, err := io.WriteString(request.Stderr, l.message); err != nil {
+		return nil, err
+	}
+	return l.readyLauncher.Start(request)
 }
 
 func (l *readyLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {

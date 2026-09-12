@@ -115,6 +115,7 @@ type Transport struct {
 	Stdin            io.Reader
 	Stdout           io.Writer
 	Stderr           io.Writer
+	BackgroundStderr io.Writer
 	ReadinessTimeout time.Duration
 	Inspector        ConfigInspector
 }
@@ -137,7 +138,7 @@ func (t Transport) connect(ctx context.Context, destination string, unattended b
 			path = "/usr/bin/ssh"
 		}
 		if enabled, err := t.Inspector.AgentForwarding(ctx, path, destination); err == nil && enabled {
-			fmt.Fprintf(defaultWriter(t.Stderr), "WARNING: SSH agent forwarding is enabled for %s; the remote host can access the forwarded agent.\n", destination)
+			fmt.Fprintf(io.MultiWriter(defaultWriter(t.Stderr), defaultWriter(t.BackgroundStderr)), "WARNING: SSH agent forwarding is enabled for %s; the remote host can access the forwarded agent.\n", destination)
 		}
 	}
 	var lastErr error
@@ -172,6 +173,12 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 		launcher = execLauncher{}
 	}
 	var stderr synchronizedBuffer
+	backgroundStderr := defaultWriter(t.BackgroundStderr)
+	bootstrapStderr := io.MultiWriter(backgroundStderr, &stderr)
+	if !unattended {
+		bootstrapStderr = io.MultiWriter(defaultWriter(t.Stderr), backgroundStderr, &stderr)
+	}
+	processStderr := &switchingWriter{writer: bootstrapStderr}
 	arguments := []string{
 		"-N", "-T", "-D", address,
 		"-o", "ExitOnForwardFailure=yes",
@@ -188,7 +195,7 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 		Args:   arguments,
 		Stdin:  defaultReader(t.Stdin),
 		Stdout: defaultWriter(t.Stdout),
-		Stderr: io.MultiWriter(defaultWriter(t.Stderr), &stderr),
+		Stderr: processStderr,
 	}
 	process, err := launcher.Start(request)
 	if err != nil {
@@ -209,6 +216,7 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 		probe, err := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "tcp4", address)
 		if err == nil {
 			_ = probe.Close()
+			processStderr.Switch(backgroundStderr)
 			connection.state.Store(uint32(Connected))
 			return connection, stderr.String(), nil
 		}
@@ -312,6 +320,23 @@ type execLauncher struct{}
 type synchronizedBuffer struct {
 	mu     sync.Mutex
 	buffer bytes.Buffer
+}
+
+type switchingWriter struct {
+	mu     sync.RWMutex
+	writer io.Writer
+}
+
+func (w *switchingWriter) Write(value []byte) (int, error) {
+	w.mu.RLock()
+	defer w.mu.RUnlock()
+	return w.writer.Write(value)
+}
+
+func (w *switchingWriter) Switch(writer io.Writer) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writer = writer
 }
 
 func (b *synchronizedBuffer) Write(value []byte) (int, error) {

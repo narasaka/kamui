@@ -16,10 +16,13 @@ user.
 The CLI starts one background controller and passes it the invoking standard
 streams. The controller starts the system OpenSSH client with those inherited
 descriptors and waits for its SOCKS listener before accepting the session as
-ready. The CLI waits for that bootstrap result, so initial prompts remain
-visible. Later reconnects add `BatchMode=yes`; an authentication or
-configuration failure changes session state to `authentication-required` and a
-foreground `kamui DESTINATION` retry is required.
+ready. The CLI waits for that bootstrap result, so initial prompts and
+diagnostics remain visible. Once the listener is ready, the long-lived child's
+stderr switches to the user-only OpenSSH log instead of retaining the launching
+terminal. Later reconnects log from their first byte and add `BatchMode=yes`;
+an authentication or configuration failure changes session state to
+`authentication-required` and a foreground `kamui DESTINATION` retry is
+required.
 
 A user-only advisory lock serializes controller startup. Requests use a
 user-only Unix socket plus a random per-controller token. Sessions are keyed by
