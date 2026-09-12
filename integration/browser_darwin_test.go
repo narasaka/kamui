@@ -4,10 +4,18 @@ package integration_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	cryptorand "crypto/rand"
 	"crypto/sha1"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
 	"fmt"
 	"io"
+	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -23,7 +31,7 @@ import (
 	"github.com/narasaka/kamui/internal/testsupport"
 )
 
-func TestInstalledChromiumBrowsersUseKamuiProxy(t *testing.T) {
+func TestInstalledBrowsersUseKamuiProxy(t *testing.T) {
 	if os.Getenv("KAMUI_BROWSER_TESTS") != "1" {
 		t.Skip("set KAMUI_BROWSER_TESTS=1 to launch installed browsers headlessly")
 	}
@@ -37,21 +45,27 @@ func TestInstalledChromiumBrowsersUseKamuiProxy(t *testing.T) {
 		}))
 		defer httpServers[index].Close()
 	}
-	httpsServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	caCertificate, serverCertificate := browserTestCertificate(t)
+	httpsServer := newBrowserTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		_, _ = io.WriteString(w, "<html><body>remote-https</body></html>")
-	}))
+	}), serverCertificate)
 	defer httpsServer.Close()
+	directServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		_, _ = io.WriteString(w, "mac-direct")
+	}))
+	defer directServer.Close()
 
 	webSocket := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serveBrowserWebSocket(w, r, "ws-ok")
 	}))
 	defer webSocket.Close()
-	secureWebSocket := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	secureWebSocket := newBrowserTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		serveBrowserWebSocket(w, r, "wss-ok")
-	}))
+	}), serverCertificate)
 	defer secureWebSocket.Close()
-	reports := make(chan string, 2)
+	reports := make(chan string, 3)
 	reportServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		reports <- request.URL.Query().Get("value")
@@ -62,6 +76,7 @@ func TestInstalledChromiumBrowsersUseKamuiProxy(t *testing.T) {
 	wssPort := strings.TrimPrefix(secureWebSocket.URL, "https://127.0.0.1:")
 	reportPort := strings.TrimPrefix(reportServer.URL, "http://127.0.0.1:")
 	httpsPort := strings.TrimPrefix(httpsServer.URL, "https://127.0.0.1:")
+	directPort := strings.TrimPrefix(directServer.URL, "http://127.0.0.1:")
 	httpPorts := make([]string, 0, len(httpServers))
 	for _, server := range httpServers {
 		httpPorts = append(httpPorts, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
@@ -76,11 +91,12 @@ const values=await Promise.all([
   fetch("http://localhost:%s").then(r=>r.text()),
   fetch("https://localhost:%s").then(r=>r.text()),
   socketResult("ws://localhost:%s"),
-  socketResult("wss://localhost:%s")
+  socketResult("wss://localhost:%s"),
+  fetch("http://0.0.0.0:%s").then(r=>r.text())
 ]);
 document.body.textContent=values.join("|");
 await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("|")));
-</script></body></html>`, httpPorts[0], httpPorts[1], httpPorts[2], httpPorts[3], httpsPort, wsPort, wssPort, reportPort)
+</script></body></html>`, httpPorts[0], httpPorts[1], httpPorts[2], httpPorts[3], httpsPort, wsPort, wssPort, directPort, reportPort)
 	}))
 	defer page.Close()
 
@@ -105,7 +121,10 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 			if _, err := os.Stat(installed.path); err != nil {
 				t.Skipf("%s is not installed", installed.id)
 			}
-			launcher := &headlessLauncher{reports: reports}
+			launcher := &headlessLauncher{
+				prefix:  []string{"--headless=new", "--disable-gpu", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--ignore-certificate-errors"},
+				reports: reports,
+			}
 			adapter := browser.NewChromiumAdapter(installed.id, []string{installed.path}, launcher)
 			profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
 				Key: destination.Key(), Proxy: result.Session.Proxy,
@@ -117,25 +136,52 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 			pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
 			launcher.want = []string{
 				"remote-http-0", "remote-http-1", "remote-http-2", "remote-http-3",
-				"remote-https", "ws-ok", "wss-ok",
+				"remote-https", "ws-ok", "wss-ok", "mac-direct",
 			}
 			if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
 				t.Fatalf("browser protocol gate: %v", err)
 			}
 		})
 	}
+
+	t.Run("firefox", func(t *testing.T) {
+		const path = "/Applications/Firefox.app/Contents/MacOS/firefox"
+		if _, err := os.Stat(path); err != nil {
+			t.Skip("Firefox is not installed")
+		}
+		certutil, err := exec.LookPath("certutil")
+		if err != nil {
+			t.Skip("certutil is required to trust the disposable HTTPS certificate")
+		}
+		launcher := &headlessLauncher{prefix: []string{"-headless"}, reports: reports}
+		adapter := browser.NewGeckoAdapter("firefox", []string{path}, launcher)
+		profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
+			Key: destination.Key(), Proxy: result.Session.Proxy,
+			ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
+		}, browser.Installation{ID: "firefox", Executable: path})
+		if err != nil {
+			t.Fatal(err)
+		}
+		installBrowserTestCA(t, certutil, profile.Path, caCertificate)
+		pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
+		launcher.want = []string{
+			"remote-http-0", "remote-http-1", "remote-http-2", "remote-http-3",
+			"remote-https", "ws-ok", "wss-ok", "mac-direct",
+		}
+		if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
+			t.Fatalf("browser protocol gate: %v", err)
+		}
+	})
 }
 
 type headlessLauncher struct {
+	prefix  []string
 	want    []string
 	reports <-chan string
 }
 
 func (l *headlessLauncher) Launch(ctx context.Context, path string, args []string) error {
-	arguments := []string{
-		"--headless=new", "--disable-gpu", "--disable-background-networking",
-		"--disable-component-update", "--disable-sync", "--ignore-certificate-errors",
-	}
+	arguments := append([]string(nil), l.prefix...)
 	arguments = append(arguments, args...)
 	launchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -162,6 +208,62 @@ func (l *headlessLauncher) Launch(ctx context.Context, path string, args []strin
 		}
 	}
 	return nil
+}
+
+func browserTestCertificate(t *testing.T) ([]byte, tls.Certificate) {
+	t.Helper()
+	caKey, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "Kamui browser integration CA"},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true,
+		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
+	}
+	caDER, err := x509.CreateCertificate(cryptorand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafKey, err := ecdsa.GenerateKey(elliptic.P256(), cryptorand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "localhost"},
+		DNSNames: []string{"localhost", "*.localhost"}, IPAddresses: []net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+		NotBefore: now.Add(-time.Hour), NotAfter: now.Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	leafDER, err := x509.CreateCertificate(cryptorand.Reader, leafTemplate, caTemplate, &leafKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return caDER, tls.Certificate{Certificate: [][]byte{leafDER, caDER}, PrivateKey: leafKey}
+}
+
+func newBrowserTLSServer(handler http.Handler, certificate tls.Certificate) *httptest.Server {
+	server := httptest.NewUnstartedServer(handler)
+	server.TLS = &tls.Config{Certificates: []tls.Certificate{certificate}}
+	server.StartTLS()
+	return server
+}
+
+func installBrowserTestCA(t *testing.T, certutil, profile string, certificate []byte) {
+	t.Helper()
+	database := "sql:" + profile
+	if output, err := exec.Command(certutil, "-N", "--empty-password", "-d", database).CombinedOutput(); err != nil {
+		t.Fatalf("initialize Firefox certificate database: %v: %s", err, output)
+	}
+	certificatePath := filepath.Join(t.TempDir(), "kamui-browser-test-ca.der")
+	if err := os.WriteFile(certificatePath, certificate, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if output, err := exec.Command(certutil, "-A", "-d", database, "-n", "kamui-browser-integration", "-t", "C,,", "-i", certificatePath).CombinedOutput(); err != nil {
+		t.Fatalf("trust Firefox test certificate: %v: %s", err, output)
+	}
 }
 
 func serveBrowserWebSocket(w http.ResponseWriter, request *http.Request, message string) {
