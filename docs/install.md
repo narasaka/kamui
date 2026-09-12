@@ -2,21 +2,21 @@
 
 Kamui currently supports macOS on Apple Silicon and Intel.
 
-## Homebrew source installation
+## Homebrew installation
 
-Until a tagged formula is published, add the repository as a tap and build the
-HEAD formula from source:
+Install the current tagged release from the
+[`narasaka/homebrew-tap`](https://github.com/narasaka/homebrew-tap) tap. The
+fully qualified name lets Homebrew add the tap automatically:
 
 ```sh
-brew tap narasaka/kamui https://github.com/narasaka/kamui
-brew install --HEAD narasaka/kamui/kamui
+brew install narasaka/tap/kamui
 ```
 
 Upgrade it with:
 
 ```sh
 brew update
-brew reinstall --HEAD narasaka/kamui/kamui
+brew upgrade narasaka/tap/kamui
 ```
 
 Uninstall the binary while preserving configuration and development profiles:

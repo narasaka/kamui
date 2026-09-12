@@ -1,3 +1,5 @@
+# Development HEAD formula. Tagged release formulae are published to
+# https://github.com/narasaka/homebrew-tap.
 class Kamui < Formula
   desc "Use a remote SSH host's loopback services in a development browser"
   homepage "https://github.com/narasaka/kamui"

@@ -12,10 +12,12 @@ deterministic ARM64 and AMD64 binaries with checksums.
 
 ## Decision
 
-The initial supported distribution is a Homebrew source build. It does not
-require a prebuilt executable to be signed or notarized. The repository also
-produces unsigned deterministic binaries for verification and development, but
-those archives are not the primary installation path.
+The initial supported distribution is a Homebrew source build published as the
+`kamui` formula in `github.com/narasaka/homebrew-tap`. Users install the tagged
+release with `brew install narasaka/tap/kamui`. It does not require a prebuilt
+executable to be signed or notarized. The repository also produces unsigned
+deterministic binaries for verification and development, but those archives are
+not the primary installation path.
 
 Before publishing prebuilt binaries as the default installation path, obtain a
 Developer ID Application certificate, sign both architectures, submit the
