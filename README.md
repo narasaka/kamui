@@ -21,8 +21,13 @@ run:
 ```sh
 kamui reyna
 # or
+kamui narasaka@192.168.1.50
+# or
 kamui narasaka@dev.example.com
 ```
+
+`reyna` can be an entry from `~/.ssh/config`; the IP-address and hostname forms
+work directly without defining an SSH alias first.
 
 Kamui starts its own non-interactive OpenSSH transport, an ephemeral local
 proxy, and an isolated development-browser profile. It does not need an
