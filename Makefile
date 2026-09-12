@@ -19,7 +19,8 @@ check-format:
 	fi
 
 check-lint: install-golangci-lint
-	$(GOLANGCI_LINT) run ./...
+	GOOS=darwin $(GOLANGCI_LINT) run ./...
+	GOOS=linux $(GOLANGCI_LINT) run ./...
 
 install-golangci-lint:
 	@expected="$(patsubst v%,%,$(GOLANGCI_LINT_VERSION))"; \

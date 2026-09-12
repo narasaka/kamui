@@ -41,7 +41,7 @@ func TestNativeLinuxBrowsersUseKamuiProxy(t *testing.T) {
 	backendPort := strings.TrimPrefix(backend.URL, "http://127.0.0.1:")
 	reportPort := strings.TrimPrefix(reportServer.URL, "http://127.0.0.1:")
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprintf(w, `<script type="module">
+		_, _ = fmt.Fprintf(w, `<script type="module">
 const value = await fetch("http://localhost:%s").then(response => response.text());
 await fetch("http://localhost:%s/report?value=" + encodeURIComponent(value));
 </script>`, backendPort, reportPort)
@@ -49,7 +49,7 @@ await fetch("http://localhost:%s/report?value=" + encodeURIComponent(value));
 	defer page.Close()
 
 	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
-	defer manager.Close()
+	t.Cleanup(func() { _ = manager.Close() })
 	destination, _ := session.ParseDestination("linux-browser-gate")
 	result, err := manager.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
 	if err != nil {

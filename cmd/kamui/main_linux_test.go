@@ -30,7 +30,7 @@ func TestCommandAndControllerShareDefaultXDGRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer null.Close()
+	defer func() { _ = null.Close() }()
 	command.Stdin = null
 	command.Stdout = null
 	command.Stderr = null
