@@ -5,12 +5,20 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/netip"
+	"io"
+	"os"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	kamuiapp "github.com/narasaka/kamui/internal/app"
 	"github.com/narasaka/kamui/internal/cliapp"
+	"github.com/narasaka/kamui/internal/controller"
 	"github.com/narasaka/kamui/internal/session"
+	"github.com/narasaka/kamui/internal/ssh"
+	"github.com/narasaka/kamui/internal/state"
+	"github.com/narasaka/kamui/internal/testsupport"
 )
 
 func TestPlannedCommandsReturnExplicitNotImplementedErrors(t *testing.T) {
@@ -62,19 +70,13 @@ func TestVersionFlagReportsBuildVersion(t *testing.T) {
 func TestStatusDistinguishesSessionStateFromSSHHealth(t *testing.T) {
 	t.Parallel()
 
-	status := statusFixture(t, session.SessionConnected, nil)
-	application := executorFunc(func(_ context.Context, request kamuiapp.Request) (kamuiapp.Result, error) {
-		if request.Operation != kamuiapp.Status || request.Destination != "reyna" {
-			t.Fatalf("request = %#v", request)
-		}
-		return kamuiapp.Result{Result: session.Result{Session: status}}, nil
-	})
+	application, _, status := runningStatusApplication(t)
 	var output bytes.Buffer
 	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
 	if err := command.Run(context.Background(), []string{"kamui", "status", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	want := "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\nreyna\tconnected\tfirefox\t127.0.0.1:52144\thealthy\n"
+	want := fmt.Sprintf("DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\nreyna\tconnected\t\t%s\thealthy\n", status.Proxy)
 	if got := output.String(); got != want {
 		t.Fatalf("status output = %q, want %q", got, want)
 	}
@@ -83,38 +85,104 @@ func TestStatusDistinguishesSessionStateFromSSHHealth(t *testing.T) {
 func TestVerboseStatusIncludesLastTunnelError(t *testing.T) {
 	t.Parallel()
 
-	status := statusFixture(t, session.SessionAuthenticationRequired, errors.New("SSH authentication failed"))
-	application := executorFunc(func(_ context.Context, _ kamuiapp.Request) (kamuiapp.Result, error) {
-		return kamuiapp.Result{Result: session.Result{Session: status}}, nil
-	})
+	application, launcher, _ := runningStatusApplication(t)
+	launcher.disconnect(t)
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var probe bytes.Buffer
+		command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &probe, ErrOut: &probe})
+		if err := command.Run(context.Background(), []string{"kamui", "status", "--verbose", "reyna"}); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(probe.String(), "authentication-required") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session did not require authentication; last status: %s", probe.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	var output bytes.Buffer
 	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
 	if err := command.Run(context.Background(), []string{"kamui", "status", "--verbose", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	want := "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tLAST ERROR\nreyna\tauthentication-required\tfirefox\t127.0.0.1:52144\tauthentication-required\tSSH authentication failed\n"
-	if got := output.String(); got != want {
-		t.Fatalf("verbose status output = %q, want %q", got, want)
+	got := output.String()
+	for _, want := range []string{
+		"DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tLAST ERROR\n",
+		"reyna\tauthentication-required\t",
+		"\tauthentication-required\tSSH authentication failed for reyna:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("verbose status output = %q, want substring %q", got, want)
+		}
 	}
 }
 
-type executorFunc func(context.Context, kamuiapp.Request) (kamuiapp.Result, error)
-
-func (execute executorFunc) Execute(ctx context.Context, request kamuiapp.Request) (kamuiapp.Result, error) {
-	return execute(ctx, request)
-}
-
-func statusFixture(t *testing.T, state session.SessionState, lastError error) session.SessionStatus {
+func runningStatusApplication(t *testing.T) (*kamuiapp.Application, *authenticationFailureLauncher, session.SessionStatus) {
 	t.Helper()
+	root, err := os.MkdirTemp("/tmp", "kamui-cli-status-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	launcher := &authenticationFailureLauncher{}
+	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
 	destination, err := session.ParseDestination("reyna")
 	if err != nil {
 		t.Fatal(err)
 	}
-	return session.SessionStatus{
-		Destination: destination,
-		State:       state,
-		Browser:     "firefox",
-		Proxy:       netip.MustParseAddrPort("127.0.0.1:52144"),
-		LastError:   lastError,
+	result, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	server, err := controller.Start(ctx, layout, manager)
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { cancel(); _ = server.Close() })
+	return kamuiapp.New(layout, nil), launcher, result.Session
+}
+
+type authenticationFailureLauncher struct {
+	base    testsupport.SSHLauncher
+	mu      sync.Mutex
+	process *testsupport.SSHProcess
+}
+
+func (l *authenticationFailureLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	l.mu.Lock()
+	if l.process != nil {
+		l.mu.Unlock()
+		_, _ = io.WriteString(request.Stderr, "Permission denied (publickey).\n")
+		return nil, errors.New("exit status 255")
+	}
+	l.mu.Unlock()
+	process, err := l.base.Start(request)
+	if err != nil {
+		return nil, err
+	}
+	l.mu.Lock()
+	l.process = process.(*testsupport.SSHProcess)
+	l.mu.Unlock()
+	return process, nil
+}
+
+func (l *authenticationFailureLauncher) disconnect(t *testing.T) {
+	t.Helper()
+	l.mu.Lock()
+	process := l.process
+	l.mu.Unlock()
+	if process == nil {
+		t.Fatal("OpenSSH process was not started")
+	}
+	if err := process.Kill(); err != nil {
+		t.Fatal(err)
 	}
 }
