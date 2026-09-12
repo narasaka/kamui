@@ -15,6 +15,31 @@ import (
 	"github.com/narasaka/kamui/internal/testsupport"
 )
 
+func TestPrintSSHConfigReturnsSnippetWithoutStartingController(t *testing.T) {
+	t.Parallel()
+
+	layout := state.NewLayout(t.TempDir())
+	starter := &failingStarter{t: t}
+	application := app.New(layout, starter)
+	result, err := application.Execute(context.Background(), app.Request{
+		Operation: app.PrintSSHConfig, Destination: "reyna",
+	})
+	if err != nil {
+		t.Fatalf("Execute returned error: %v", err)
+	}
+	want := "Host reyna\n    PermitLocalCommand yes\n    LocalCommand kamui ssh-hook %n\n"
+	if result.Output != want {
+		t.Fatalf("snippet = %q, want %q", result.Output, want)
+	}
+}
+
+type failingStarter struct{ t *testing.T }
+
+func (s *failingStarter) Start(context.Context, state.Layout) error {
+	s.t.Error("controller must not start for print-ssh-config")
+	return nil
+}
+
 func TestApplicationStartsMissingControllerAndRetriesEnsure(t *testing.T) {
 	t.Parallel()
 
@@ -45,6 +70,42 @@ func TestApplicationStartsMissingControllerAndRetriesEnsure(t *testing.T) {
 		cancel()
 		starter.close()
 	})
+}
+
+func TestSSHHookReturnsAfterControllerAcceptsSlowActivation(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-hook-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	launcher := &delayedLauncher{delay: 500 * time.Millisecond}
+	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	starter := &inProcessStarter{ctx: ctx, manager: manager}
+	application := app.New(layout, starter)
+
+	started := time.Now()
+	if _, err := application.Execute(context.Background(), app.Request{Operation: app.SSHHook, Destination: "reyna"}); err != nil {
+		t.Fatalf("SSH hook: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed >= 200*time.Millisecond {
+		t.Fatalf("SSH hook took %v, want prompt acceptance", elapsed)
+	}
+	t.Cleanup(func() { cancel(); starter.close() })
+}
+
+type delayedLauncher struct {
+	testsupport.SSHLauncher
+	delay time.Duration
+}
+
+func (l *delayedLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	time.Sleep(l.delay)
+	return l.SSHLauncher.Start(request)
 }
 
 type inProcessStarter struct {

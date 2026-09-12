@@ -131,12 +131,41 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			Name:      "ssh-hook",
 			ArgsUsage: "SSH_DESTINATION",
 			Flags:     []cli.Flag{&cli.BoolFlag{Name: "verbose"}},
-			Action:    destinationAction("ssh-hook", exactlyOneDestination),
+			Action: func(ctx context.Context, cmd *cli.Command) error {
+				if err := exactlyOneDestination(cmd); err != nil {
+					return err
+				}
+				if application == nil {
+					return notImplemented("ssh-hook")
+				}
+				_, err := application.Execute(ctx, kamuiapp.Request{
+					Operation: kamuiapp.SSHHook, Destination: cmd.Args().First(), Verbose: cmd.Bool("verbose"),
+				})
+				if err == nil && cmd.Bool("verbose") {
+					_, err = fmt.Fprintf(streams.Out, "Kamui activation requested for %s\n", cmd.Args().First())
+				}
+				return err
+			},
 		},
 		{
 			Name:      "print-ssh-config",
 			ArgsUsage: "SSH_ALIAS",
-			Action:    destinationAction("print-ssh-config", exactlyOneDestination),
+			Action: func(ctx context.Context, cmd *cli.Command) error {
+				if err := exactlyOneDestination(cmd); err != nil {
+					return err
+				}
+				if application == nil {
+					return notImplemented("print-ssh-config")
+				}
+				result, err := application.Execute(ctx, kamuiapp.Request{
+					Operation: kamuiapp.PrintSSHConfig, Destination: cmd.Args().First(),
+				})
+				if err != nil {
+					return err
+				}
+				_, err = io.WriteString(streams.Out, result.Output)
+				return err
+			},
 		},
 	}
 

@@ -31,6 +31,17 @@ type Client struct {
 
 // Execute performs one command through the controller socket.
 func (c Client) Execute(ctx context.Context, command session.Command) (session.Result, error) {
+	return c.execute(ctx, command, false)
+}
+
+// ExecuteAsync asks the controller to accept a command without waiting for its
+// lifecycle work to finish.
+func (c Client) ExecuteAsync(ctx context.Context, command session.Command) error {
+	_, err := c.execute(ctx, command, true)
+	return err
+}
+
+func (c Client) execute(ctx context.Context, command session.Command, async bool) (session.Result, error) {
 	token, err := os.ReadFile(c.Layout.Token)
 	if err != nil {
 		return session.Result{}, fmt.Errorf("read controller token: %w", err)
@@ -46,6 +57,8 @@ func (c Client) Execute(ctx context.Context, command session.Command) (session.R
 		Destination: command.Destination.String(),
 		Browser:     command.Browser,
 		URLs:        command.URLs,
+		Async:       async,
+		SkipBrowser: command.SkipBrowser,
 	}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return session.Result{}, fmt.Errorf("send controller command: %w", err)
@@ -156,9 +169,16 @@ func (s *Server) handle(connection net.Conn) {
 		_ = json.NewEncoder(connection).Encode(wireResponse{Error: err.Error()})
 		return
 	}
-	result, err := s.manager.Execute(s.ctx, session.Command{
+	command := session.Command{
 		Operation: request.Operation, Destination: destination, Browser: request.Browser, URLs: request.URLs,
-	})
+		SkipBrowser: request.SkipBrowser,
+	}
+	if request.Async {
+		_ = json.NewEncoder(connection).Encode(wireResponse{})
+		go func() { _, _ = s.manager.Execute(s.ctx, command) }()
+		return
+	}
+	result, err := s.manager.Execute(s.ctx, command)
 	if err != nil {
 		_ = json.NewEncoder(connection).Encode(wireResponse{Error: err.Error()})
 		return
@@ -222,6 +242,8 @@ type wireRequest struct {
 	Destination string            `json:"destination"`
 	Browser     browser.Selection `json:"browser"`
 	URLs        []string          `json:"urls,omitempty"`
+	Async       bool              `json:"async,omitempty"`
+	SkipBrowser bool              `json:"skipBrowser,omitempty"`
 }
 
 type wireStatus struct {

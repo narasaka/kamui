@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/narasaka/kamui/internal/browser"
+	"github.com/narasaka/kamui/internal/config"
 	"github.com/narasaka/kamui/internal/controller"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/state"
@@ -57,6 +58,7 @@ type Application struct {
 	layout  state.Layout
 	client  controller.Client
 	starter Starter
+	config  config.Loader
 }
 
 // New creates a command gateway for one user state root.
@@ -64,7 +66,10 @@ func New(layout state.Layout, starter Starter) *Application {
 	if starter == nil {
 		starter = ProcessStarter{}
 	}
-	return &Application{layout: layout, client: controller.Client{Layout: layout}, starter: starter}
+	return &Application{
+		layout: layout, client: controller.Client{Layout: layout}, starter: starter,
+		config: config.Loader{Path: layout.Config},
+	}
 }
 
 // Execute applies one user command.
@@ -73,14 +78,42 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
+	if request.Operation == PrintSSHConfig {
+		return Result{Output: fmt.Sprintf("Host %s\n    PermitLocalCommand yes\n    LocalCommand kamui ssh-hook %%n\n", destination)}, nil
+	}
 	operation, err := sessionOperation(request.Operation)
 	if err != nil {
 		return Result{}, err
 	}
-	command := session.Command{
-		Operation: operation, Destination: destination, Browser: request.Browser, URLs: request.URLs,
+	selection := request.Browser
+	skipBrowser := false
+	if request.Operation == Ensure || request.Operation == SSHHook {
+		var overrides config.Overrides
+		if selection.Explicit != "" {
+			overrides.Browser = &selection.Explicit
+		}
+		effective, err := a.config.Resolve(ctx, destination, overrides)
+		if err != nil {
+			return Result{}, err
+		}
+		if selection.Explicit == "" {
+			selection.Host = effective.Browser
+		}
+		if request.Operation == SSHHook && !effective.OpenBrowserOnSSH {
+			skipBrowser = true
+		}
 	}
-	result, err := a.client.Execute(ctx, command)
+	command := session.Command{
+		Operation: operation, Destination: destination, Browser: selection, URLs: request.URLs,
+		SkipBrowser: skipBrowser,
+	}
+	call := func() (session.Result, error) {
+		if request.Operation == SSHHook {
+			return session.Result{}, a.client.ExecuteAsync(ctx, command)
+		}
+		return a.client.Execute(ctx, command)
+	}
+	result, err := call()
 	if err == nil {
 		return Result{Result: result}, nil
 	}
@@ -96,7 +129,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	deadline := time.NewTimer(5 * time.Second)
 	defer deadline.Stop()
 	for {
-		result, err = a.client.Execute(ctx, command)
+		result, err = call()
 		if err == nil {
 			return Result{Result: result}, nil
 		}

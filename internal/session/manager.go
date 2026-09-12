@@ -30,6 +30,7 @@ type Command struct {
 	Destination Destination
 	Browser     browser.Selection
 	URLs        []string
+	SkipBrowser bool
 }
 
 // SessionState is the user-visible lifecycle state.
@@ -154,7 +155,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 		return Result{}, err
 	}
 	managed.proxy = runningProxy
-	if m.browsers != nil {
+	if m.browsers != nil && !command.SkipBrowser {
 		selected, err := m.browsers.Select(ctx, command.Browser)
 		if err != nil {
 			_ = managed.close()
