@@ -111,11 +111,11 @@ func TestRemoteListenerDisappearsAndReleasesLocalPort(t *testing.T) {
 func TestConflictingPortIsClaimedAfterLocalListenerStops(t *testing.T) {
 	t.Parallel()
 
-	local, err := net.Listen("tcp4", "127.0.0.1:0")
+	port := availableDualStackPort(t)
+	local, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	port := uint16(local.Addr().(*net.TCPAddr).Port)
 	discoverer := &mutableDiscoverer{ports: []uint16{port}}
 	running, err := mirror.Start(context.Background(), "reyna", discoverer, unreachableDial, mirror.Options{ReconcileInterval: 10 * time.Millisecond})
 	if err != nil {

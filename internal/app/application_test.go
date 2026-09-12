@@ -314,15 +314,20 @@ func TestApplicationMigratesV004ControllerProtocol(t *testing.T) {
 	})
 
 	deadline := time.Now().Add(3 * time.Second)
+	var legacyIdentity controller.Identity
 	for {
 		identity, probeErr := (controller.Client{Layout: layout}).Identity(context.Background())
 		if probeErr == nil && identity.Legacy {
+			legacyIdentity = identity
 			break
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("v0.0.4 helper did not become ready: identity=%#v error=%v", identity, probeErr)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if legacyIdentity.PID != command.Process.Pid {
+		t.Fatalf("authenticated legacy peer PID = %d, want helper PID %d", legacyIdentity.PID, command.Process.Pid)
 	}
 
 	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
@@ -388,31 +393,59 @@ func TestSSHHookReturnsAfterControllerAcceptsSlowActivation(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.RemoveAll(root) })
 	layout := state.NewLayout(root)
-	launcher := &delayedLauncher{delay: 500 * time.Millisecond}
+	launcher := newGatedLauncher()
 	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
-	t.Cleanup(func() { _ = manager.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	starter := &inProcessStarter{ctx: ctx, manager: manager}
 	application := app.New(layout, starter)
+	t.Cleanup(func() {
+		launcher.release()
+		cancel()
+		starter.close()
+		_ = manager.Close()
+	})
 
-	started := time.Now()
-	if _, err := application.Execute(context.Background(), app.Request{Operation: app.SSHHook, Destination: "reyna"}); err != nil {
-		t.Fatalf("SSH hook: %v", err)
+	result := make(chan error, 1)
+	go func() {
+		_, err := application.Execute(context.Background(), app.Request{Operation: app.SSHHook, Destination: "reyna"})
+		result <- err
+	}()
+	select {
+	case <-launcher.started:
+	case <-time.After(time.Second):
+		t.Fatal("SSH hook activation did not reach the launcher")
 	}
-	if elapsed := time.Since(started); elapsed >= 200*time.Millisecond {
-		t.Fatalf("SSH hook took %v, want prompt acceptance", elapsed)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("SSH hook: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("SSH hook waited for blocked SSH activation")
 	}
-	t.Cleanup(func() { cancel(); starter.close() })
+	launcher.release()
 }
 
-type delayedLauncher struct {
+type gatedLauncher struct {
 	testsupport.SSHLauncher
-	delay time.Duration
+	started     chan struct{}
+	proceed     chan struct{}
+	startedOnce sync.Once
+	releaseOnce sync.Once
 }
 
-func (l *delayedLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
-	time.Sleep(l.delay)
+func newGatedLauncher() *gatedLauncher {
+	return &gatedLauncher{started: make(chan struct{}), proceed: make(chan struct{})}
+}
+
+func (l *gatedLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	l.startedOnce.Do(func() { close(l.started) })
+	<-l.proceed
 	return l.SSHLauncher.Start(request)
+}
+
+func (l *gatedLauncher) release() {
+	l.releaseOnce.Do(func() { close(l.proceed) })
 }
 
 type inProcessStarter struct {
