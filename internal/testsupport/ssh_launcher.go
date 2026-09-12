@@ -47,6 +47,22 @@ func (l *SSHLauncher) Starts() int {
 	return l.starts
 }
 
+// Active returns the number of simulated OpenSSH children not yet reaped.
+func (l *SSHLauncher) Active() int {
+	l.mu.Lock()
+	processes := append([]*SSHProcess(nil), l.processes...)
+	l.mu.Unlock()
+	active := 0
+	for _, process := range processes {
+		select {
+		case <-process.done:
+		default:
+			active++
+		}
+	}
+	return active
+}
+
 // SSHProcess is a test-only dynamic-forward process.
 type SSHProcess struct {
 	listener net.Listener
