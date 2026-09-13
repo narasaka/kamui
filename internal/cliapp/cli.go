@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"text/tabwriter"
 
 	kamuiapp "github.com/narasaka/kamui/internal/app"
 	"github.com/narasaka/kamui/internal/browser"
@@ -314,11 +315,8 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 }
 
 func printStatuses(writer io.Writer, statuses []session.SessionStatus, verbose bool) error {
-	header := "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tMIRROR\tMIRRORED\tCONFLICTS\tMIRROR ERROR"
-	if verbose {
-		header += "\tLAST ERROR"
-	}
-	if _, err := fmt.Fprintln(writer, header); err != nil {
+	table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
+	if _, err := fmt.Fprintln(table, "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tMIRROR"); err != nil {
 		return err
 	}
 	for _, status := range statuses {
@@ -326,25 +324,115 @@ func printStatuses(writer io.Writer, statuses []session.SessionStatus, verbose b
 		if status.Mirror.Enabled {
 			mirrorState = "enabled"
 		}
-		mirrorError := ""
-		if status.Mirror.LastError != nil {
-			mirrorError = status.Mirror.LastError.Error()
+		browser := status.Browser
+		if browser == "" {
+			browser = "-"
 		}
-		line := fmt.Sprintf("%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s",
-			status.Destination, sessionState(status.State), status.Browser, status.Proxy, sshState(status.State),
-			mirrorState, formatPorts(status.Mirror.MirroredPorts), formatConflicts(status.Mirror.ConflictedPorts), mirrorError)
-		if verbose {
-			lastError := ""
-			if status.LastError != nil {
-				lastError = status.LastError.Error()
-			}
-			line += "\t" + lastError
-		}
-		if _, err := fmt.Fprintln(writer, line); err != nil {
+		if _, err := fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			status.Destination, sessionState(status.State), browser, status.Proxy, sshState(status.State), mirrorState); err != nil {
 			return err
 		}
 	}
+	if err := table.Flush(); err != nil {
+		return err
+	}
+
+	wroteDetails := false
+	for _, status := range statuses {
+		if !hasStatusDetails(status, verbose) {
+			continue
+		}
+		if !wroteDetails || len(statuses) > 1 {
+			if _, err := fmt.Fprintln(writer); err != nil {
+				return err
+			}
+		}
+		if len(statuses) > 1 {
+			if _, err := fmt.Fprintf(writer, "%s:\n", status.Destination); err != nil {
+				return err
+			}
+		}
+		if status.Mirror.Enabled || len(status.Mirror.MirroredPorts) > 0 || len(status.Mirror.ConflictedPorts) > 0 || status.Mirror.LastError != nil {
+			if err := writeWrappedStatusDetail(writer, "MIRRORED", portValues(status.Mirror.MirroredPorts), true); err != nil {
+				return err
+			}
+			if err := writeWrappedStatusDetail(writer, "CONFLICTS", conflictValues(status.Mirror.ConflictedPorts), true); err != nil {
+				return err
+			}
+			mirrorError := "-"
+			if status.Mirror.LastError != nil {
+				mirrorError = status.Mirror.LastError.Error()
+			}
+			if err := writeWrappedStatusDetail(writer, "MIRROR ERROR", strings.Fields(mirrorError), false); err != nil {
+				return err
+			}
+		}
+		if verbose && status.LastError != nil {
+			if err := writeWrappedStatusDetail(writer, "LAST ERROR", strings.Fields(status.LastError.Error()), false); err != nil {
+				return err
+			}
+		}
+		wroteDetails = true
+	}
 	return nil
+}
+
+const statusLineWidth = 80
+const statusDetailLabelWidth = len("MIRROR ERROR:")
+
+func hasStatusDetails(status session.SessionStatus, verbose bool) bool {
+	return status.Mirror.Enabled || len(status.Mirror.MirroredPorts) > 0 || len(status.Mirror.ConflictedPorts) > 0 ||
+		status.Mirror.LastError != nil || (verbose && status.LastError != nil)
+}
+
+func writeWrappedStatusDetail(writer io.Writer, label string, values []string, commaSeparated bool) error {
+	prefix := fmt.Sprintf("%-*s ", statusDetailLabelWidth, label+":")
+	if len(values) == 0 {
+		_, err := fmt.Fprintln(writer, prefix+"-")
+		return err
+	}
+
+	indent := strings.Repeat(" ", len(prefix))
+	line := prefix
+	valuesOnLine := 0
+	for index, value := range values {
+		token := value
+		joiner := " "
+		if commaSeparated && index < len(values)-1 {
+			token += ","
+		}
+		if valuesOnLine == 0 {
+			joiner = ""
+		}
+		if valuesOnLine > 0 && len(line)+len(joiner)+len(token) > statusLineWidth {
+			if _, err := fmt.Fprintln(writer, line); err != nil {
+				return err
+			}
+			line = indent + token
+			valuesOnLine = 1
+			continue
+		}
+		line += joiner + token
+		valuesOnLine++
+	}
+	_, err := fmt.Fprintln(writer, line)
+	return err
+}
+
+func portValues(ports []uint16) []string {
+	values := make([]string, 0, len(ports))
+	for _, port := range ports {
+		values = append(values, fmt.Sprint(port))
+	}
+	return values
+}
+
+func conflictValues(conflicts []mirror.Conflict) []string {
+	values := make([]string, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		values = append(values, fmt.Sprint(conflict.Port))
+	}
+	return values
 }
 
 func browserLoopbackValue(cmd *cli.Command, notices io.Writer) (string, error) {
@@ -364,22 +452,14 @@ func formatPorts(ports []uint16) string {
 	if len(ports) == 0 {
 		return "-"
 	}
-	values := make([]string, 0, len(ports))
-	for _, port := range ports {
-		values = append(values, fmt.Sprint(port))
-	}
-	return strings.Join(values, ",")
+	return strings.Join(portValues(ports), ",")
 }
 
 func formatConflicts(conflicts []mirror.Conflict) string {
 	if len(conflicts) == 0 {
 		return "-"
 	}
-	values := make([]string, 0, len(conflicts))
-	for _, conflict := range conflicts {
-		values = append(values, fmt.Sprint(conflict.Port))
-	}
-	return strings.Join(values, ",")
+	return strings.Join(conflictValues(conflicts), ",")
 }
 
 func sshState(state session.SessionState) string {

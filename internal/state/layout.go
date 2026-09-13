@@ -54,7 +54,10 @@ func NewLayoutWithRuntime(root, runtimeRoot string) Layout {
 	layout.Runtime = runtimeRoot
 	layout.Socket = filepath.Join(runtimeRoot, "kamui.sock")
 	layout.Lock = filepath.Join(runtimeRoot, "controller.lock")
-	layout.Token = filepath.Join(runtimeRoot, "controller.token")
+	// macOS uses one root and keeps its established token path under state.
+	if filepath.Clean(runtimeRoot) != filepath.Clean(root) {
+		layout.Token = filepath.Join(runtimeRoot, "controller.token")
+	}
 	return layout
 }
 

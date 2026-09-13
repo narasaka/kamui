@@ -52,9 +52,11 @@ The OpenSSH process managed by Kamui always disables `LocalCommand` to prevent
 recursion.
 
 Status includes whether mirroring is enabled, mirrored ports, locally occupied
-or already-owned conflict ports, and discovery/forwarding errors. Reconciliation
-runs every five seconds. Existing local or Kamui listeners win; conflicts are
-reported and retried. TCP is supported; UDP is not.
+or already-owned conflict ports, and discovery/forwarding errors. Mirror details
+appear below each session summary, and port lists wrap at 80 characters so large
+listener sets remain readable. Reconciliation runs every five seconds. Existing
+local or Kamui listeners win; conflicts are reported and retried. TCP is
+supported; UDP is not.
 
 ## Exit behavior
 
