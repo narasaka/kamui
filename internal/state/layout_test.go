@@ -35,6 +35,30 @@ func TestLayoutCreatesUserOnlyPathsAndContainsDestinationState(t *testing.T) {
 	}
 }
 
+func TestControllerLayoutPreservesTokenWhenRuntimeMatchesRoot(t *testing.T) {
+	t.Parallel()
+
+	root := filepath.Join(t.TempDir(), "Application Support", "kamui")
+	clientLayout := state.NewLayout(root)
+	controllerLayout := state.NewLayoutWithRuntime(clientLayout.Root, clientLayout.Runtime)
+
+	if controllerLayout.Token != clientLayout.Token {
+		t.Fatalf("controller token path = %q, want client token path %q", controllerLayout.Token, clientLayout.Token)
+	}
+}
+
+func TestControllerLayoutMovesTokenToSeparateRuntime(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	runtimeRoot := t.TempDir()
+	layout := state.NewLayoutWithRuntime(root, runtimeRoot)
+	want := filepath.Join(runtimeRoot, "controller.token")
+	if layout.Token != want {
+		t.Fatalf("controller token path = %q, want runtime token path %q", layout.Token, want)
+	}
+}
+
 func TestLayoutRemembersSuccessfulBrowserPerExactDestination(t *testing.T) {
 	t.Parallel()
 

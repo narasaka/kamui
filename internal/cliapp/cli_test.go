@@ -276,7 +276,7 @@ func TestMirrorCommandDoesNotLaunchBrowserAndStatusShowsPorts(t *testing.T) {
 	if err := command.Run(context.Background(), []string{"kamui", "status", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "\tenabled\t") || !strings.Contains(got, fmt.Sprint(mirroredPort)) || !strings.Contains(got, fmt.Sprint(conflictPort)) {
+	if got := output.String(); !strings.Contains(got, "  enabled\n") || !strings.Contains(got, "MIRRORED:     "+fmt.Sprint(mirroredPort)) || !strings.Contains(got, "CONFLICTS:    "+fmt.Sprint(conflictPort)) {
 		t.Fatalf("status output = %q", got)
 	}
 	status, err := application.Execute(context.Background(), kamuiapp.Request{Operation: kamuiapp.Status, Destination: "reyna"})
@@ -315,7 +315,7 @@ func TestStatusDistinguishesSessionStateFromSSHHealth(t *testing.T) {
 	if err := command.Run(context.Background(), []string{"kamui", "status", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tMIRROR\tMIRRORED\tCONFLICTS\tMIRROR ERROR\nreyna\tconnected\t\t%s\thealthy\tdisabled\t-\t-\t\n", status.Proxy)
+	want := fmt.Sprintf("DESTINATION  STATE      BROWSER  PROXY            SSH      MIRROR\nreyna        connected  -        %s  healthy  disabled\n", status.Proxy)
 	if got := output.String(); got != want {
 		t.Fatalf("status output = %q, want %q", got, want)
 	}
@@ -348,9 +348,9 @@ func TestVerboseStatusIncludesLastTunnelError(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		"DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tMIRROR\tMIRRORED\tCONFLICTS\tMIRROR ERROR\tLAST ERROR\n",
-		"reyna\tauthentication-required\t",
-		"SSH authentication failed for reyna:",
+		"DESTINATION  STATE",
+		"reyna        authentication-required",
+		"LAST ERROR:   SSH authentication failed for reyna:",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("verbose status output = %q, want substring %q", got, want)
