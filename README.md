@@ -80,13 +80,27 @@ TCP forwarding plus one of `ss`, `lsof`, or `netstat` for port discovery.
 
 ## Basic use
 
-First, confirm that the destination works with your system SSH client. Then run
-Kamui with the same destination:
+If you normally connect with this command:
 
 ```sh
-# SSH alias defined in ~/.ssh/config
-kamui my-dev-server
+ssh my-dev-server
+```
 
+Use this command instead:
+
+```sh
+kamui my-dev-server
+```
+
+Do not run the commands one after the other. `ssh my-dev-server` becomes
+`kamui my-dev-server`. Kamui starts and manages its own OpenSSH connection.
+
+The destination stays the same. Kamui accepts only that positional argument,
+so keep any OpenSSH options in `~/.ssh/config`.
+
+The same pattern works with other OpenSSH destinations:
+
+```sh
 # Direct IP address
 kamui narasaka@192.168.1.50
 
