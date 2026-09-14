@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -25,6 +26,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -62,12 +64,7 @@ func TestInstalledBrowsersUseKamuiProxy(t *testing.T) {
 		serveBrowserWebSocket(w, r, "wss-ok")
 	}), serverCertificate)
 	defer secureWebSocket.Close()
-	reports := make(chan string, 3)
-	reportServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		reports <- request.URL.Query().Get("value")
-		w.WriteHeader(http.StatusNoContent)
-	}))
+	reports, reportServer := newBrowserReportServer()
 	defer reportServer.Close()
 	wsPort := strings.TrimPrefix(webSocket.URL, "http://127.0.0.1:")
 	wssPort := strings.TrimPrefix(secureWebSocket.URL, "https://127.0.0.1:")
@@ -77,12 +74,27 @@ func TestInstalledBrowsersUseKamuiProxy(t *testing.T) {
 	for _, server := range httpServers {
 		httpPorts = append(httpPorts, strings.TrimPrefix(server.URL, "http://127.0.0.1:"))
 	}
+	// The page echoes the launch token from its query string on every report so a
+	// late report from one browser launch can never satisfy another. It beacons
+	// "loaded" before any protocol check and annotates every result with elapsed
+	// time, and every WebSocket with its readyState, so a stalled check is
+	// distinguishable from a browser that never ran the page.
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `<html><body>waiting<script type="module">
-const socketResult=(target)=>new Promise((resolve,reject)=>{const socket=new WebSocket(target);socket.onmessage=(event)=>resolve(event.data);socket.onerror=reject;});
+const token=new URLSearchParams(location.search).get("token");
+const started=performance.now();
+const elapsed=()=>"@"+Math.round(performance.now()-started)+"ms";
+const report=(stage,value)=>fetch("http://localhost:%s/report?token="+encodeURIComponent(token)+"&stage="+stage+"&value="+encodeURIComponent(value));
+report("loaded",navigator.userAgent).catch(()=>{});
+const socketResult=(target)=>{let socket;const promise=new Promise((resolve,reject)=>{
+  socket=new WebSocket(target);
+  socket.onmessage=(event)=>resolve(event.data);
+  socket.onerror=()=>reject("socket error readyState="+socket.readyState);
+  socket.onclose=(event)=>reject("socket closed code="+event.code+" clean="+event.wasClean);
+});promise.describe=()=>"[readyState="+socket.readyState+"]";return promise;};
 const inspect=(name,promise)=>Promise.race([
-  promise.then(value=>name+"="+value).catch(error=>name+"=ERROR:"+error),
-  new Promise(resolve=>setTimeout(()=>resolve(name+"=TIMEOUT"),10000))
+  promise.then(value=>name+"="+value+elapsed()).catch(error=>name+"=ERROR:"+error+elapsed()),
+  new Promise(resolve=>setTimeout(()=>resolve(name+"=TIMEOUT"+(promise.describe?promise.describe():"")+elapsed()),10000))
 ]);
 const values=await Promise.all([
   inspect("http-localhost",fetch("http://localhost:%s").then(r=>r.text())),
@@ -94,10 +106,15 @@ const values=await Promise.all([
   inspect("secure-websocket",socketResult("wss://localhost:%s"))
 ]);
 document.body.textContent=values.join("|");
-await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("|")));
-</script></body></html>`, httpPorts[0], httpPorts[1], httpPorts[2], httpPorts[3], httpsPort, wsPort, wssPort, reportPort)
+await report("result",values.join("|"));
+</script></body></html>`, reportPort, httpPorts[0], httpPorts[1], httpPorts[2], httpPorts[3], httpsPort, wsPort, wssPort)
 	}))
 	defer page.Close()
+	pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
+	wantReport := []string{
+		"remote-http-0", "remote-http-1", "remote-http-2", "remote-http-3",
+		"remote-https", "ws-ok", "wss-ok",
+	}
 
 	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
 	t.Cleanup(func() { _ = manager.Close() })
@@ -124,25 +141,22 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 				t.Skipf("%s is not installed", installed.id)
 			}
 			launcher := &browserTestLauncher{
-				prefix:  []string{"--headless=new", "--disable-gpu", "--disable-background-networking", "--disable-component-update", "--disable-sync", "--ignore-certificate-errors"},
+				prefix:  append(chromiumHeadlessFlags(), "--disable-component-update", "--disable-sync", "--ignore-certificate-errors"),
+				want:    wantReport,
 				reports: reports,
+				logf:    t.Logf,
 			}
 			adapter := browser.NewChromiumAdapter(installed.id, []string{installed.path}, launcher)
-			profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
-				Key: destination.Key(), Proxy: result.Session.Proxy,
-				ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
-			}, browser.Installation{ID: installed.id, Executable: installed.path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
-			launcher.want = []string{
-				"remote-http-0", "remote-http-1", "remote-http-2", "remote-http-3",
-				"remote-https", "ws-ok", "wss-ok",
-			}
-			if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
-				t.Fatalf("browser protocol gate: %v", err)
-			}
+			runBrowserGate(t, installed.id, launcher, func(token string) error {
+				profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
+					Key: destination.Key(), Proxy: result.Session.Proxy,
+					ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
+				}, browser.Installation{ID: installed.id, Executable: installed.path})
+				if err != nil {
+					return err
+				}
+				return adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort + "/?token=" + token})
+			})
 		})
 	}
 
@@ -172,26 +186,90 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(values.join("
 				}
 				t.Skip("certutil is required to trust the disposable HTTPS certificate")
 			}
-			launcher := &browserTestLauncher{prefix: []string{"-headless"}, reports: reports}
+			launcher := &browserTestLauncher{prefix: []string{"-headless"}, want: wantReport, reports: reports, logf: t.Logf}
 			adapter := browser.NewGeckoAdapter(installed.id, []string{installed.path}, launcher)
-			profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
-				Key: destination.Key(), Proxy: result.Session.Proxy,
-				ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
-			}, browser.Installation{ID: installed.id, Executable: installed.path})
-			if err != nil {
-				t.Fatal(err)
-			}
-			installBrowserTestCA(t, certutil, profile.Path, caCertificate)
-			pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
-			launcher.want = []string{
-				"remote-http-0", "remote-http-1", "remote-http-2", "remote-http-3",
-				"remote-https", "ws-ok", "wss-ok",
-			}
-			if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
-				t.Fatalf("browser protocol gate: %v", err)
-			}
+			runBrowserGate(t, installed.id, launcher, func(token string) error {
+				profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
+					Key: destination.Key(), Proxy: result.Session.Proxy,
+					ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
+				}, browser.Installation{ID: installed.id, Executable: installed.path})
+				if err != nil {
+					return err
+				}
+				if err := quietGeckoTestProfile(profile.Path); err != nil {
+					return err
+				}
+				installBrowserTestCA(t, certutil, profile.Path, caCertificate)
+				return adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort + "/?token=" + token})
+			})
 		})
 	}
+}
+
+// browserGateAttempts is how many fresh-profile launches one browser gets before
+// the gate fails. A first-launch stall on a cold CI runner is not a proxy
+// regression; a browser that fails twice in a row is.
+const browserGateAttempts = 2
+
+// runBrowserGate launches one browser through launch, retrying once with a new
+// token and profile when the first attempt fails. Every attempt is logged and a
+// retried pass is surfaced as a GitHub Actions warning so retries stay visible.
+func runBrowserGate(t *testing.T, id string, launcher *browserTestLauncher, launch func(token string) error) {
+	t.Helper()
+	var failures []error
+	for attempt := 1; attempt <= browserGateAttempts; attempt++ {
+		token := fmt.Sprintf("%s-%d-%d", id, attempt, time.Now().UnixNano())
+		launcher.token = token
+		started := time.Now()
+		err := launch(token)
+		if err == nil {
+			if attempt > 1 {
+				message := fmt.Sprintf("%s passed on attempt %d/%d after: %v", id, attempt, browserGateAttempts, errors.Join(failures...))
+				t.Log(message)
+				if os.Getenv("GITHUB_ACTIONS") == "true" {
+					fmt.Printf("::warning title=Browser gate retried::%s\n", strings.ReplaceAll(message, "\n", " "))
+				}
+			}
+			return
+		}
+		t.Logf("%s attempt %d/%d failed after %s: %v", id, attempt, browserGateAttempts, time.Since(started).Round(time.Millisecond), err)
+		failures = append(failures, fmt.Errorf("attempt %d: %w", attempt, err))
+	}
+	t.Fatalf("browser protocol gate: %s failed %d attempts: %v", id, browserGateAttempts, errors.Join(failures...))
+}
+
+// chromiumHeadlessFlags skips first-run and default-browser work so a new
+// profile spends its startup on the page under test.
+func chromiumHeadlessFlags() []string {
+	return []string{"--headless=new", "--disable-gpu", "--disable-background-networking", "--no-first-run", "--no-default-browser-check"}
+}
+
+// quietGeckoTestProfile appends test-only preferences to the Kamui user.js so a
+// new profile does not spend its first seconds on update checks, captive portal
+// probes, or onboarding pages that all route through the proxy and fail.
+// Production profiles keep the minimal user.js from ADR 0001.
+func quietGeckoTestProfile(profilePath string) error {
+	file, err := os.OpenFile(filepath.Join(profilePath, "user.js"), os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("open test user.js: %w", err)
+	}
+	_, err = file.WriteString(`// Test-only first-run quieting appended by the integration gate.
+user_pref("app.update.disabledForTesting", true);
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("browser.aboutwelcome.enabled", false);
+user_pref("datareporting.policy.dataSubmissionPolicyBypassNotification", true);
+user_pref("network.captive-portal-service.enabled", false);
+user_pref("network.connectivity-service.enabled", false);
+user_pref("toolkit.telemetry.reportingpolicy.firstRun", false);
+`)
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return fmt.Errorf("append test user.js: %w", err)
+	}
+	return nil
 }
 
 func TestChromeReconnectsWebSocketAfterRemoteServerRestart(t *testing.T) {
@@ -204,24 +282,22 @@ func TestChromeReconnectsWebSocketAfterRemoteServerRestart(t *testing.T) {
 	}
 	webSocketURL, stopWebSocket := restartingWebSocketServer(t)
 	defer stopWebSocket()
-	reports := make(chan string, 1)
-	reportServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		reports <- request.URL.Query().Get("value")
-		w.WriteHeader(http.StatusNoContent)
-	}))
+	reports, reportServer := newBrowserReportServer()
 	defer reportServer.Close()
 	wsPort := strings.TrimPrefix(webSocketURL, "ws://127.0.0.1:")
 	reportPort := strings.TrimPrefix(reportServer.URL, "http://127.0.0.1:")
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `<script type="module">
+const token=new URLSearchParams(location.search).get("token");
+const report=(stage,value)=>fetch("http://localhost:%s/report?token="+encodeURIComponent(token)+"&stage="+stage+"&value="+encodeURIComponent(value));
+report("loaded",navigator.userAgent).catch(()=>{});
 const once=()=>new Promise((resolve,reject)=>{const socket=new WebSocket("ws://localhost:%s");socket.onmessage=e=>resolve(e.data);socket.onerror=reject;});
 const first=await once();
 await new Promise(resolve=>setTimeout(resolve, 700));
 let second;
 for(let attempt=0;attempt<20&&!second;attempt++){try{second=await once();}catch{await new Promise(resolve=>setTimeout(resolve,100));}}
-await fetch("http://localhost:%s/report?value="+encodeURIComponent(first+"|"+second));
-</script>`, wsPort, reportPort)
+await report("result",first+"|"+second);
+</script>`, reportPort, wsPort)
 	}))
 	defer page.Close()
 
@@ -233,20 +309,20 @@ await fetch("http://localhost:%s/report?value="+encodeURIComponent(first+"|"+sec
 		t.Fatal(err)
 	}
 	launcher := &browserTestLauncher{
-		prefix:  []string{"--headless=new", "--disable-gpu", "--disable-background-networking", "--disable-component-update", "--disable-sync"},
-		reports: reports, want: []string{"before-restart", "after-restart"},
+		prefix:  append(chromiumHeadlessFlags(), "--disable-component-update", "--disable-sync"),
+		reports: reports, want: []string{"before-restart", "after-restart"}, logf: t.Logf,
 	}
 	adapter := browser.NewChromiumAdapter("chrome", []string{chromePath}, launcher)
-	profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
-		Key: destination.Key(), Proxy: result.Session.Proxy, ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
-	}, browser.Installation{ID: "chrome", Executable: chromePath})
-	if err != nil {
-		t.Fatal(err)
-	}
 	pagePort := strings.TrimPrefix(page.URL, "http://127.0.0.1:")
-	if err := adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort}); err != nil {
-		t.Fatalf("HMR-style reconnect gate: %v", err)
-	}
+	runBrowserGate(t, "chrome-reconnect", launcher, func(token string) error {
+		profile, err := adapter.PrepareProfile(context.Background(), browser.Session{
+			Key: destination.Key(), Proxy: result.Session.Proxy, ProfileRoot: filepath.Join(t.TempDir(), "profiles"),
+		}, browser.Installation{ID: "chrome", Executable: chromePath})
+		if err != nil {
+			return err
+		}
+		return adapter.Launch(context.Background(), profile, []string{"http://localhost:" + pagePort + "/?token=" + token})
+	})
 }
 
 func TestChromeUsesSeveralRemoteLoopbackTabsSimultaneously(t *testing.T) {
@@ -297,7 +373,7 @@ type chromeTabsLauncher struct {
 }
 
 func (l *chromeTabsLauncher) Launch(ctx context.Context, path string, args []string) error {
-	arguments := []string{"--headless=new", "--disable-gpu", "--disable-background-networking", "--remote-debugging-port=0"}
+	arguments := append(chromiumHeadlessFlags(), "--remote-debugging-port=0")
 	arguments = append(arguments, args...)
 	command := exec.CommandContext(ctx, path, arguments...)
 	var output strings.Builder
@@ -414,18 +490,61 @@ func requiredBrowser(id string) bool {
 	return false
 }
 
+// browserReport is one beacon from the page under test. Stage is "loaded" when
+// the page script started and "result" when the protocol checks finished.
+type browserReport struct {
+	token string
+	stage string
+	value string
+}
+
+// newBrowserReportServer serves the page's report endpoint. Reports are
+// delivered on a buffered channel and dropped rather than blocking the handler
+// if the buffer is ever full, so a chatty browser cannot wedge the test.
+func newBrowserReportServer() (<-chan browserReport, *httptest.Server) {
+	reports := make(chan browserReport, 64)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		query := request.URL.Query()
+		report := browserReport{token: query.Get("token"), stage: query.Get("stage"), value: query.Get("value")}
+		select {
+		case reports <- report:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	return reports, server
+}
+
+// browserLaunchTimeout bounds one headless launch. The page itself caps each
+// protocol check at ten seconds, so the remainder covers a cold first launch on
+// a CI runner that is still scanning a freshly installed bundle.
+const browserLaunchTimeout = 45 * time.Second
+
 type browserTestLauncher struct {
 	prefix  []string
 	want    []string
-	reports <-chan string
+	token   string
+	reports <-chan browserReport
+	logf    func(format string, args ...any)
 }
 
 func TestBrowserTestLauncherSynchronizesProcessDiagnostics(t *testing.T) {
-	reports := make(chan string, 1)
-	time.AfterFunc(20*time.Millisecond, func() { reports <- "completed" })
-	launcher := &browserTestLauncher{want: []string{"missing"}, reports: reports}
+	reports := make(chan browserReport, 1)
+	time.AfterFunc(20*time.Millisecond, func() { reports <- browserReport{token: "t", stage: "result", value: "completed"} })
+	launcher := &browserTestLauncher{want: []string{"missing"}, token: "t", reports: reports}
 	if err := launcher.Launch(context.Background(), "/usr/bin/yes", []string{"browser diagnostic"}); err == nil {
 		t.Fatal("Launch returned nil, want missing-report error")
+	}
+}
+
+func TestBrowserTestLauncherIgnoresReportsForOtherTokens(t *testing.T) {
+	reports := make(chan browserReport, 2)
+	reports <- browserReport{token: "stale", stage: "result", value: "wanted"}
+	time.AfterFunc(20*time.Millisecond, func() { reports <- browserReport{token: "live", stage: "result", value: "wanted"} })
+	launcher := &browserTestLauncher{want: []string{"wanted"}, token: "live", reports: reports}
+	if err := launcher.Launch(context.Background(), "/usr/bin/yes", []string{"browser diagnostic"}); err != nil {
+		t.Fatalf("Launch = %v, want the live-token report to satisfy the launch", err)
 	}
 }
 
@@ -452,28 +571,67 @@ func (l *browserTestLauncher) Launch(ctx context.Context, path string, args []st
 	launchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	command := exec.CommandContext(launchContext, path, arguments...)
+	// Browsers fork helper processes. Start the browser in its own process group
+	// so teardown removes the helpers too instead of leaving them to compete
+	// with the next browser for the runner's CPU.
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	var output synchronizedBuffer
 	command.Stdout = &output
 	command.Stderr = &output
 	if err := command.Start(); err != nil {
 		return err
 	}
+	started := time.Now()
 	defer func() {
+		_ = syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
 		_ = command.Process.Kill()
 		_ = command.Wait()
 	}()
-	var report string
-	select {
-	case report = <-l.reports:
-	case <-time.After(20 * time.Second):
-		return fmt.Errorf("headless browser did not finish protocol checks: %s", output.String())
-	}
-	for _, wanted := range l.want {
-		if !strings.Contains(report, wanted) {
-			return fmt.Errorf("headless browser report %q did not contain %q: %s", report, wanted, output.String())
+	deadline := time.NewTimer(browserLaunchTimeout)
+	defer deadline.Stop()
+	var loaded time.Duration
+	var loadedAgent string
+	for {
+		var report browserReport
+		select {
+		case report = <-l.reports:
+		case <-deadline.C:
+			if loaded == 0 {
+				return fmt.Errorf("headless browser never loaded the page within %s: %s", browserLaunchTimeout, output.String())
+			}
+			return fmt.Errorf("headless browser loaded the page after %s (%s) but did not report protocol checks within %s: %s",
+				loaded.Round(time.Millisecond), loadedAgent, browserLaunchTimeout, output.String())
 		}
+		if report.token != l.token {
+			l.log("ignoring report for another launch: token=%q stage=%s value=%q", report.token, report.stage, report.value)
+			continue
+		}
+		switch report.stage {
+		case "loaded":
+			loaded = time.Since(started)
+			loadedAgent = report.value
+			l.log("page loaded after %s: %s", loaded.Round(time.Millisecond), loadedAgent)
+			continue
+		case "result":
+		default:
+			l.log("ignoring unknown report stage %q: %q", report.stage, report.value)
+			continue
+		}
+		l.log("protocol checks reported after %s: %s", time.Since(started).Round(time.Millisecond), report.value)
+		for _, wanted := range l.want {
+			if !strings.Contains(report.value, wanted) {
+				return fmt.Errorf("headless browser report %q did not contain %q (page loaded after %s): %s",
+					report.value, wanted, loaded.Round(time.Millisecond), output.String())
+			}
+		}
+		return nil
 	}
-	return nil
+}
+
+func (l *browserTestLauncher) log(format string, args ...any) {
+	if l.logf != nil {
+		l.logf(format, args...)
+	}
 }
 
 func browserTestCertificate(t *testing.T) ([]byte, tls.Certificate) {

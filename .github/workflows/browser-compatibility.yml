@@ -22,13 +22,13 @@ jobs:
           cache: true
       - name: Install advertised browsers and certificate tooling
         run: |
-          brew list --cask google-chrome >/dev/null 2>&1 || brew install --cask google-chrome
-          brew list --cask brave-browser >/dev/null 2>&1 || brew install --cask brave-browser
-          brew list --cask firefox >/dev/null 2>&1 || brew install --cask firefox
-          brew list --cask firefox@developer-edition >/dev/null 2>&1 || brew install --cask firefox@developer-edition
-          brew list --cask zen >/dev/null 2>&1 || brew install --cask zen
-          brew list --cask librewolf >/dev/null 2>&1 || brew install --cask librewolf
-          brew list --cask floorp >/dev/null 2>&1 || brew install --cask floorp
+          brew list --cask google-chrome >/dev/null 2>&1 || brew install --cask --no-quarantine google-chrome
+          brew list --cask brave-browser >/dev/null 2>&1 || brew install --cask --no-quarantine brave-browser
+          brew list --cask firefox >/dev/null 2>&1 || brew install --cask --no-quarantine firefox
+          brew list --cask firefox@developer-edition >/dev/null 2>&1 || brew install --cask --no-quarantine firefox@developer-edition
+          brew list --cask zen >/dev/null 2>&1 || brew install --cask --no-quarantine zen
+          brew list --cask librewolf >/dev/null 2>&1 || brew install --cask --no-quarantine librewolf
+          brew list --cask floorp >/dev/null 2>&1 || brew install --cask --no-quarantine floorp
           brew list --formula nss >/dev/null 2>&1 || brew install nss
       - name: Gate advertised browser protocols
         env:
