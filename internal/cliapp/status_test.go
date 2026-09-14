@@ -25,8 +25,9 @@ func TestPrintStatusesWrapsLongMirrorDetails(t *testing.T) {
 		Mirror: mirror.Status{
 			Enabled:       true,
 			MirroredPorts: []uint16{2019, 3011, 3389, 3773, 5432, 8317, 8385, 20241, 22000, 34180, 34715, 38223, 38331, 41533, 41715, 42971, 43713, 43887, 44389, 53113},
+			ExcludedPorts: []uint16{22, 53, 80, 443},
 			ConflictedPorts: []mirror.Conflict{
-				{Port: 22}, {Port: 53}, {Port: 80}, {Port: 631},
+				{Port: 3000}, {Port: 5173},
 			},
 		},
 	}
@@ -40,7 +41,8 @@ func TestPrintStatusesWrapsLongMirrorDetails(t *testing.T) {
 		"DESTINATION  STATE      BROWSER  PROXY            SSH      MIRROR\n",
 		"reyna        connected  -        127.0.0.1:51747  healthy  enabled\n\n",
 		"MIRRORED:     ",
-		"\nCONFLICTS:    22, 53, 80, 631\n",
+		"\nEXCLUDED:     22, 53, 80, 443\n",
+		"\nCONFLICTS:    3000, 5173\n",
 		"\nMIRROR ERROR: -\n",
 	} {
 		if !strings.Contains(got, want) {
@@ -51,7 +53,7 @@ func TestPrintStatusesWrapsLongMirrorDetails(t *testing.T) {
 		t.Fatalf("status output contains terminal-dependent tab stops: %q", got)
 	}
 	compact := strings.NewReplacer(" ", "", "\n", "", "\t", "").Replace(got)
-	wantPorts := "MIRRORED:2019,3011,3389,3773,5432,8317,8385,20241,22000,34180,34715,38223,38331,41533,41715,42971,43713,43887,44389,53113CONFLICTS:"
+	wantPorts := "MIRRORED:2019,3011,3389,3773,5432,8317,8385,20241,22000,34180,34715,38223,38331,41533,41715,42971,43713,43887,44389,53113EXCLUDED:22,53,80,443CONFLICTS:"
 	if !strings.Contains(compact, wantPorts) {
 		t.Fatalf("status output lost or reordered mirrored ports: %q", got)
 	}

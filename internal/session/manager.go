@@ -41,6 +41,7 @@ type Command struct {
 	LoopbackMode      proxy.LoopbackMode
 	Unattended        bool
 	EnableMirror      bool
+	PortPolicy        *mirror.PortPolicy
 }
 
 // SessionState is the user-visible lifecycle state.
@@ -245,7 +246,8 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 
 func (m *Manager) addCapabilities(ctx context.Context, managed *managedSession, command Command) error {
 	managed.mu.RLock()
-	hasMirror := managed.mirror != nil
+	runningMirror := managed.mirror
+	hasMirror := runningMirror != nil
 	hasBrowser := managed.browserAdapter != nil
 	runningProxy := managed.proxy
 	managed.mu.RUnlock()
@@ -256,13 +258,17 @@ func (m *Manager) addCapabilities(ctx context.Context, managed *managedSession, 
 		}
 		runningMirror, err := mirror.Start(managed.ctx, managed.destination.String(), discoverer, func(ctx context.Context, network, address string) (net.Conn, error) {
 			return managed.dial(ctx, network, address)
-		}, mirror.Options{ReconcileInterval: m.mirrorInterval})
+		}, mirror.Options{ReconcileInterval: m.mirrorInterval, PortPolicy: command.PortPolicy})
 		if err != nil {
 			return err
 		}
 		managed.mu.Lock()
 		managed.mirror = runningMirror
 		managed.mu.Unlock()
+	} else if command.EnableMirror && command.PortPolicy != nil {
+		if err := runningMirror.SetPortPolicy(*command.PortPolicy); err != nil {
+			return err
+		}
 	}
 	if m.browsers != nil && !command.SkipBrowser && !hasBrowser {
 		selected, err := m.browsers.Select(ctx, command.Browser)
