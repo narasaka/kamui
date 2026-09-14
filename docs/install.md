@@ -1,9 +1,10 @@
 # Install, upgrade, and uninstall
 
 Kamui supports macOS and Linux on ARM64 and AMD64. The machine running Kamui
-needs OpenSSH; the dedicated-browser workflow also needs a supported native
-browser. An SSH destination needs only an SSH server with TCP forwarding.
-`kamui mirror` additionally needs `ss`, `lsof`, or `netstat` on the destination.
+needs OpenSSH. The dedicated-browser workflow also needs a supported native
+browser. An SSH destination needs an SSH server with TCP forwarding. The
+default mirroring workflow also needs `ss`, `lsof`, or `netstat` on the
+destination.
 
 ## Go installation
 

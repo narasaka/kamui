@@ -43,12 +43,14 @@ remain under the same application-support directory. On Linux they use
 files use `$XDG_RUNTIME_DIR/kamui` when available. Kamui creates its directories
 with user-only permissions.
 
-`openBrowserOnSSH` applies only to the optional SSH hook. `idleTimeout` stops a
-session after the proxy has no open connections and no recent traffic; zero
-disables idle expiry. `stopBrowserOnStop` defaults to false, leaving the
-dedicated browser open with an offline proxy. When true, Kamui also terminates
-the browser process it launched for that dedicated profile when the session is
-stopped or expires. Existing profile files are preserved in either case.
+`openBrowserOnSSH` applies only to the optional SSH hook. The hook always
+requests the default TCP mirror. When `openBrowserOnSSH` is true, it also adds
+the dedicated browser capability. `idleTimeout` stops a session after the proxy
+has no open connections and no recent traffic. Zero disables idle expiry.
+`stopBrowserOnStop` defaults to false, so the dedicated browser remains open
+with an offline proxy. When true, Kamui terminates the browser process it
+launched for that profile when the session stops or expires. Kamui preserves
+the profile files in either case.
 
 `browserLoopback` accepts `remote-only` or `local-first` and defaults to
 `remote-only`. In local-first mode, an available local loopback listener wins;
@@ -56,10 +58,10 @@ Kamui uses remote loopback only when both local IPv4 and IPv6 connections are
 refused. This permits remote browser content to reach genuine local loopback
 services, so use it only with trusted hosts.
 
-This setting affects only Kamui's dedicated browser and is unrelated to
-`kamui mirror`. The old `loopback` JSON key remains a deprecated compatibility
-alias. Do not set both spellings at the same scope.
+This setting affects only `kamui browser` and a browser opened by the SSH hook.
+It does not change TCP mirroring. The old `loopback` JSON key remains a
+deprecated compatibility alias. Do not set both spellings at the same scope.
 
-Port mirroring is intentionally opt-in per running session with
-`kamui mirror SSH_DESTINATION`; it is not enabled by configuration. It exposes
+`kamui SSH_DESTINATION` and `kamui mirror SSH_DESTINATION` enable port mirroring.
+No configuration key disables mirroring for those commands. Mirroring supports
 TCP only, binds only `127.0.0.1` and `::1`, and does not support UDP.
