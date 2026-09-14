@@ -1,17 +1,32 @@
 # Kamui
 
-Kamui makes TCP services bound to loopback on a remote macOS or Linux machine
-available on your laptop's loopback interface. Run one command with an OpenSSH
-destination:
+Kamui mirrors the TCP services that listen on loopback on a remote macOS or
+Linux machine onto your laptop's loopback interface. If you connect to that
+machine with:
 
 ```sh
-kamui my-dev-server
+ssh foo
+# or
+ssh nathan@192.168.1.50
 ```
 
+run this instead:
+
+```sh
+kamui foo
+# or
+kamui nathan@192.168.1.50
+```
+
+The destination is whatever you already pass to `ssh`: an alias from
+`~/.ssh/config`, a hostname, or `user@host`. Kamui hands it to the system
+OpenSSH client unchanged and manages that connection itself, so you do not run
+`ssh` first.
+
 Kamui discovers listening TCP ports on the remote machine and binds the same
-ports on local `127.0.0.1` and `::1`. Your normal browser, `curl`, and other
-local TCP clients can then use URLs such as `http://localhost:3000`. Kamui uses
-the system OpenSSH client and installs nothing on the remote machine.
+ports on local `127.0.0.1` and `::1`. When a remote service listens on port
+3000, `http://localhost:3000` works in your normal browser, in `curl`, and in
+any other local TCP client. Kamui installs nothing on the remote machine.
 
 > [!WARNING]
 > The primary command exposes the selected remote host's listening TCP services
@@ -43,7 +58,7 @@ ssh \
   -L 3001:127.0.0.1:3001 \
   -L 3002:127.0.0.1:3002 \
   -L 3003:127.0.0.1:3003 \
-  my-dev-server
+  foo
 ```
 
 That worked until a repository opened another port. I had to notice the new
@@ -80,73 +95,48 @@ TCP forwarding plus one of `ss`, `lsof`, or `netstat` for port discovery.
 
 ## Basic use
 
-If you normally connect with this command:
+Every example in this README uses `foo` as the SSH destination. Replace it with
+the value you pass to `ssh`. Any OpenSSH destination form works:
 
 ```sh
-ssh my-dev-server
+kamui foo                       # alias from ~/.ssh/config
+kamui nathan@192.168.1.50       # login name and IP address
+kamui nathan@foo.example.com    # login name and hostname
+kamui monitoring                # Tailscale MagicDNS machine name
 ```
 
-Use this command instead:
-
-```sh
-kamui my-dev-server
-```
-
-Do not run the commands one after the other. `ssh my-dev-server` becomes
-`kamui my-dev-server`. Kamui starts and manages its own OpenSSH connection.
-
-The destination stays the same. Kamui accepts only that positional argument,
-so keep any OpenSSH options in `~/.ssh/config`.
-
-The same pattern works with other OpenSSH destinations:
-
-```sh
-# Direct IP address
-kamui narasaka@192.168.1.50
-
-# Tailscale MagicDNS machine name
-kamui narasaka@monitoring
-
-# Full Tailscale MagicDNS name
-kamui narasaka@monitoring.yak-bebop.ts.net
-
-# Ordinary DNS hostname
-kamui narasaka@dev.example.com
-```
-
-Each value after `kamui` is one OpenSSH destination. `my-dev-server` is an
-example SSH alias. Tailscale MagicDNS can resolve a machine name such as
-`monitoring` without a matching entry in `~/.ssh/config`. IP addresses, full
-MagicDNS names, and ordinary hostnames also work.
+Kamui accepts only that one positional argument. Keep ports, jump hosts,
+identity files, and other connection settings in `~/.ssh/config`. A Tailscale
+MagicDNS name such as `monitoring` resolves without an entry there.
 
 Start remote services as you normally do. When a service listens on remote
-port 3000, open `http://localhost:3000` in your existing local browser. You do
-not need to declare the port to Kamui or change the service's bind address.
+port 3000, open `http://localhost:3000` in your local browser. You do not need
+to declare the port to Kamui or change the service's bind address.
 
-Use these commands to inspect and stop the session:
+Inspect or stop the session with:
 
 ```sh
-kamui status my-dev-server
-kamui stop my-dev-server
+kamui status foo
+kamui stop foo
 ```
 
-`kamui doctor my-dev-server` checks the local installation and SSH path. Kamui
-does not start project services. If a remote service stops, Kamui releases its
-local port after the next discovery pass.
+`kamui doctor foo` checks the local installation and SSH path. Kamui does not
+start project services. If a remote service stops, Kamui releases its local
+port after the next discovery pass.
 
 ## Dedicated browser mode
 
 The dedicated browser proxy remains available as a narrower alternative:
 
 ```sh
-kamui browser my-dev-server
-kamui browser my-dev-server --browser firefox
+kamui browser foo
+kamui browser foo --browser firefox
 ```
 
 This command starts or reuses an isolated browser profile. Inside that profile,
 explicit loopback URLs connect to the remote loopback interface through an
 ephemeral HTTP proxy. Kamui does not mirror ports for other local applications
-unless you also run `kamui my-dev-server`.
+unless you also run `kamui foo`.
 
 The default browser mode sends `localhost`, names ending in `.localhost`, IPv4
 `127.0.0.0/8`, and IPv6 `::1` to the remote host. It preserves the requested
@@ -156,7 +146,7 @@ reach real local services from that profile while it uses `remote-only` mode.
 Use local-first mode when the profile must prefer a service on the laptop:
 
 ```sh
-kamui browser my-dev-server --browser-loopback local-first
+kamui browser foo --browser-loopback local-first
 ```
 
 Local-first mode tries local `127.0.0.1` and `::1` before the remote host. It
@@ -246,9 +236,9 @@ proxy settings, the system HTTP proxy, packet-filter rules, or Network
 Extensions. It does not mirror UDP, QUIC, or HTTP/3 traffic.
 
 The browser and mirror capabilities share one session for an exact destination.
-`kamui browser my-dev-server` adds a browser to an existing mirror session.
-`kamui my-dev-server` adds mirroring to a browser-created session. `kamui stop
-my-dev-server` closes the proxy, SSH transport, and mirrored listeners.
+`kamui browser foo` adds a browser to an existing mirror session.
+`kamui foo` adds mirroring to a browser-created session. `kamui stop
+foo` closes the proxy, SSH transport, and mirrored listeners.
 
 A dropped SSH connection breaks current TCP streams and WebSockets. New
 connections work after a successful bounded reconnect. If a reconnect needs
@@ -269,7 +259,7 @@ You can ask Kamui to enable mirroring after an interactive SSH login succeeds.
 Print the snippet for an SSH alias:
 
 ```sh
-kamui print-ssh-config my-dev-server
+kamui print-ssh-config foo
 ```
 
 Review the output and add it to your SSH configuration yourself. The snippet
@@ -280,10 +270,10 @@ open the dedicated browser.
 
 ## Troubleshooting
 
-- Run `kamui doctor DESTINATION` to check `ssh`, connectivity, browser
+- Run `kamui doctor SSH_DESTINATION` to check `ssh`, connectivity, browser
   discovery, state permissions, port allocation, and the loopback proxy. It
   also warns when the effective SSH configuration enables agent forwarding.
-- Rerun `kamui DESTINATION` in a terminal if status reports an authentication
+- Rerun `kamui SSH_DESTINATION` in a terminal if status reports an authentication
   requirement after a network change. Background retries never hide prompts.
 - Run `kamui browsers` to list supported browser identifiers and executable
   paths.
