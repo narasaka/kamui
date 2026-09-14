@@ -84,7 +84,13 @@ client can work with Kamui.
 Installation, upgrade, uninstall, and release-build instructions are in
 [the installation guide](docs/install.md).
 
-Install the latest tagged version on macOS or Linux with Go:
+Install the latest tagged version with Homebrew on macOS or Linuxbrew:
+
+```sh
+brew install narasaka/tap/kamui
+```
+
+Or with Go:
 
 ```sh
 go install github.com/narasaka/kamui/cmd/kamui@latest
