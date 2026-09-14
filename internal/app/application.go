@@ -159,7 +159,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		StopBrowserOnStop: stopBrowserOnStop,
 		LoopbackMode:      loopbackMode,
 		Unattended:        request.Operation == SSHHook,
-		EnableMirror:      request.Operation == Mirror,
+		EnableMirror:      request.Operation == Mirror || request.Operation == SSHHook,
 	}
 	call := func() (session.Result, error) {
 		if request.Operation == SSHHook {

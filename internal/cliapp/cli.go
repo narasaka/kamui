@@ -44,17 +44,11 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	command := &cli.Command{
 		Name:      "kamui",
 		Version:   version.Version,
-		Usage:     "use a remote SSH host's loopback services on this machine",
+		Usage:     "mirror a remote SSH host's loopback TCP services on this machine",
 		ArgsUsage: "SSH_DESTINATION",
 		Reader:    streams.In,
 		Writer:    streams.Out,
 		ErrWriter: streams.ErrOut,
-		Flags: []cli.Flag{
-			&cli.StringFlag{Name: "browser"},
-			&cli.StringFlag{Name: "browser-family"},
-			&cli.StringFlag{Name: "browser-loopback", Usage: "route dedicated-browser loopback using remote-only or local-first"},
-			&cli.StringFlag{Name: "loopback", Usage: "deprecated alias for --browser-loopback"},
-		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.NArg() == 0 {
 				return cli.ShowRootCommandHelp(cmd)
@@ -67,37 +61,69 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				return err
 			}
 			if application == nil {
-				if _, err := browserLoopbackValue(cmd, streams.ErrOut); err != nil {
-					return err
-				}
-				return notImplemented("ensure")
-			}
-			loopback, err := browserLoopbackValue(cmd, streams.ErrOut)
-			if err != nil {
-				return err
+				return notImplemented("mirror")
 			}
 			result, err := application.Execute(ctx, kamuiapp.Request{
-				Operation:   kamuiapp.Ensure,
-				Destination: destination.String(),
-				Browser:     browser.Selection{Explicit: cmd.String("browser"), Family: cmd.String("browser-family")},
-				Loopback:    loopback,
+				Operation: kamuiapp.Mirror, Destination: destination.String(),
 			})
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(streams.Out, "%s connected; proxy %s; browser %s\n", destination, result.Session.Proxy, result.Session.Browser)
-			if err == nil && streams.ErrOut != nil && (result.ShowSecurityWarning || result.Session.LoopbackMode == proxy.LocalFirst) {
-				warning := "WARNING: Remote content receives localhost origin trust in this dedicated profile; genuine local-machine localhost is unavailable there."
-				if result.Session.LoopbackMode == proxy.LocalFirst {
-					warning = "WARNING: Remote content receives localhost origin trust and may access genuine local-machine localhost services in local-first mode."
-				}
-				_, err = fmt.Fprintln(streams.ErrOut, warning)
-			}
+			_, err = fmt.Fprintf(streams.Out, "%s mirroring enabled; mirrored %s; conflicts %s\n",
+				destination, formatPorts(result.Session.Mirror.MirroredPorts), formatConflicts(result.Session.Mirror.ConflictedPorts))
 			return err
 		},
 	}
 
 	command.Commands = []*cli.Command{
+		{
+			Name:      "browser",
+			Usage:     "open a dedicated browser for remote loopback services",
+			ArgsUsage: "SSH_DESTINATION",
+			Flags: []cli.Flag{
+				&cli.StringFlag{Name: "browser"},
+				&cli.StringFlag{Name: "browser-family"},
+				&cli.StringFlag{Name: "browser-loopback", Usage: "route dedicated-browser loopback using remote-only or local-first"},
+				&cli.StringFlag{Name: "loopback", Usage: "deprecated alias for --browser-loopback"},
+			},
+			Action: func(ctx context.Context, cmd *cli.Command) error {
+				if err := exactlyOneDestination(cmd); err != nil {
+					return err
+				}
+				destination, err := session.ParseDestination(cmd.Args().First())
+				if err != nil {
+					return err
+				}
+				if application == nil {
+					if _, err := browserLoopbackValue(cmd, streams.ErrOut); err != nil {
+						return err
+					}
+					return notImplemented("ensure")
+				}
+				loopback, err := browserLoopbackValue(cmd, streams.ErrOut)
+				if err != nil {
+					return err
+				}
+				result, err := application.Execute(ctx, kamuiapp.Request{
+					Operation:   kamuiapp.Ensure,
+					Destination: destination.String(),
+					Browser:     browser.Selection{Explicit: cmd.String("browser"), Family: cmd.String("browser-family")},
+					Loopback:    loopback,
+				})
+				if err != nil {
+					return err
+				}
+				_, err = fmt.Fprintf(streams.Out, "%s connected; proxy %s; browser %s\n", destination, result.Session.Proxy, result.Session.Browser)
+				if err == nil && streams.ErrOut != nil && (result.ShowSecurityWarning || result.Session.LoopbackMode == proxy.LocalFirst) {
+					warning := "WARNING: Remote content receives localhost origin trust in this dedicated profile; genuine local-machine localhost is unavailable there."
+					if result.Session.LoopbackMode == proxy.LocalFirst {
+						warning = "WARNING: Remote content receives localhost origin trust and may access genuine local-machine localhost services in local-first mode."
+					}
+					_, err = fmt.Fprintln(streams.ErrOut, warning)
+				}
+				return err
+			},
+		},
 		{
 			Name:      "mirror",
 			Usage:     "mirror remote TCP listeners on local loopback",

@@ -426,6 +426,50 @@ func TestSSHHookReturnsAfterControllerAcceptsSlowActivation(t *testing.T) {
 	launcher.release()
 }
 
+func TestSSHHookEnablesMirroring(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-hook-mirror-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:        ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second},
+		MirrorDiscoverer: staticDiscoverer{},
+		MirrorInterval:   time.Hour,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	application := app.New(layout, nil)
+
+	if _, err := application.Execute(context.Background(), app.Request{Operation: app.SSHHook, Destination: "reyna"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		result, statusErr := application.Execute(context.Background(), app.Request{Operation: app.Status, Destination: "reyna"})
+		if statusErr == nil && result.Session.Mirror.Enabled {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("mirror enabled = false after SSH hook; last status error: %v", statusErr)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+type staticDiscoverer struct{}
+
+func (staticDiscoverer) ListeningPorts(context.Context, string) ([]uint16, error) {
+	return nil, nil
+}
+
 type gatedLauncher struct {
 	testsupport.SSHLauncher
 	started     chan struct{}
