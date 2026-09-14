@@ -268,7 +268,7 @@ func TestPrimaryCommandMirrorsPortsWithoutLaunchingBrowser(t *testing.T) {
 	layout := state.NewLayout(root)
 	manager := session.NewManagerWithOptions(session.ManagerOptions{
 		Transport:        ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second},
-		MirrorDiscoverer: cliDiscoverer{ports: []uint16{mirroredPort, conflictPort}},
+		MirrorDiscoverer: cliDiscoverer{ports: []uint16{80, mirroredPort, conflictPort}},
 		MirrorInterval:   10 * time.Millisecond,
 	})
 	t.Cleanup(func() { _ = manager.Close() })
@@ -283,14 +283,14 @@ func TestPrimaryCommandMirrorsPortsWithoutLaunchingBrowser(t *testing.T) {
 	if err := command.Run(context.Background(), []string{"kamui", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "mirroring enabled") || !strings.Contains(got, fmt.Sprint(mirroredPort)) || !strings.Contains(got, fmt.Sprint(conflictPort)) {
+	if got := output.String(); !strings.Contains(got, "mirroring enabled") || !strings.Contains(got, fmt.Sprint(mirroredPort)) || !strings.Contains(got, "excluded 80") || !strings.Contains(got, fmt.Sprint(conflictPort)) {
 		t.Fatalf("mirror output = %q", got)
 	}
 	output.Reset()
 	if err := command.Run(context.Background(), []string{"kamui", "status", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "  enabled\n") || !strings.Contains(got, "MIRRORED:     "+fmt.Sprint(mirroredPort)) || !strings.Contains(got, "CONFLICTS:    "+fmt.Sprint(conflictPort)) {
+	if got := output.String(); !strings.Contains(got, "  enabled\n") || !strings.Contains(got, "MIRRORED:     "+fmt.Sprint(mirroredPort)) || !strings.Contains(got, "EXCLUDED:     80") || !strings.Contains(got, "CONFLICTS:    "+fmt.Sprint(conflictPort)) {
 		t.Fatalf("status output = %q", got)
 	}
 	status, err := application.Execute(context.Background(), kamuiapp.Request{Operation: kamuiapp.Status, Destination: "reyna"})
@@ -302,10 +302,108 @@ func TestPrimaryCommandMirrorsPortsWithoutLaunchingBrowser(t *testing.T) {
 	}
 }
 
+func TestPrimaryCommandAppliesPortFlagsOverHostConfiguration(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-cli-port-policy-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	includePort := availablePort(t)
+	excludePort := availablePort(t)
+	for excludePort == includePort {
+		excludePort = availablePort(t)
+	}
+
+	layout := state.NewLayout(root)
+	if err := layout.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	configuration := fmt.Sprintf(`{"hosts":{"reyna":{"ports":{"exclude":["%d"]}}}}`, includePort)
+	if err := os.WriteFile(layout.Config, []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:        ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second},
+		MirrorDiscoverer: cliDiscoverer{ports: []uint16{includePort, excludePort}},
+		MirrorInterval:   10 * time.Millisecond,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	application := kamuiapp.New(layout, nil)
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+
+	err = command.Run(context.Background(), []string{
+		"kamui", "reyna",
+		"--include-port", fmt.Sprint(includePort),
+		"--exclude-port", fmt.Sprint(excludePort),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "mirrored "+fmt.Sprint(includePort)) || !strings.Contains(got, "excluded "+fmt.Sprint(excludePort)) {
+		t.Fatalf("mirror output = %q", got)
+	}
+
+	output.Reset()
+	compatibilityCommand := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+	err = compatibilityCommand.Run(context.Background(), []string{
+		"kamui", "mirror", "reyna",
+		"--exclude-port", fmt.Sprint(includePort),
+		"--include-port", fmt.Sprint(excludePort),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "mirrored "+fmt.Sprint(excludePort)) || !strings.Contains(got, "excluded "+fmt.Sprint(includePort)) {
+		t.Fatalf("compatibility mirror output = %q", got)
+	}
+}
+
 type cliDiscoverer struct{ ports []uint16 }
 
 func (d cliDiscoverer) ListeningPorts(context.Context, string) ([]uint16, error) {
 	return append([]uint16(nil), d.ports...), nil
+}
+
+func availablePort(t *testing.T) uint16 {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(listener.Addr().(*net.TCPAddr).Port)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func TestMirrorCommandsRejectInvalidPortFlags(t *testing.T) {
+	t.Parallel()
+
+	application := kamuiapp.New(state.NewLayout(t.TempDir()), nil)
+	for name, args := range map[string][]string{
+		"primary":       {"kamui", "reyna", "--include-port", "0"},
+		"compatibility": {"kamui", "mirror", "reyna", "--exclude-port", "65536"},
+	} {
+		name, args := name, args
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var output bytes.Buffer
+			command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+			err := command.Run(context.Background(), args)
+			if err == nil || !strings.Contains(err.Error(), "invalid TCP port") {
+				t.Fatalf("error = %v, want invalid TCP port", err)
+			}
+		})
+	}
 }
 
 func TestBrowserCommandRejectsInvalidLoopbackMode(t *testing.T) {

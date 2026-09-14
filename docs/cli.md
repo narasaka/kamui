@@ -6,13 +6,31 @@ failed layer and do not reinterpret an SSH destination as OpenSSH options.
 ## Primary command
 
 `kamui SSH_DESTINATION` ensures a session exists and enables transparent TCP
-mirroring. It discovers listening ports on the remote host and binds the same
+mirroring. It discovers listening ports on the remote host and binds eligible
 ports on local IPv4 and IPv6 loopback. It does not launch a browser and does not
-accept application ports, browser flags, or a `-url` flag.
+accept browser flags or a `-url` flag.
+
+System ports 1 through 1023 are excluded by default. Repeat `--include-port`
+or `--exclude-port` to override the policy for one invocation. Each value is a
+single TCP port or an inclusive range:
+
+```sh
+kamui reyna --include-port 443
+kamui reyna --include-port 80 --include-port 443
+kamui reyna --include-port 1-1023
+kamui reyna --exclude-port 5432
+```
+
+These flags select mirrored service ports. They do not select the SSH server's
+port, which remains an OpenSSH configuration setting. If both flags cover the
+same port, inclusion wins. Invalid ports, reversed ranges, and values outside
+1 through 65535 are usage errors.
 
 `kamui mirror SSH_DESTINATION` is a compatibility spelling for the same
 operation. Repeating either command reuses the session for that exact
-destination.
+destination. It also replaces the running mirror's port policy and reconciles
+listeners immediately without replacing the SSH transport. Command-line rules
+last until another mirror command updates the session or the session stops.
 
 Running `kamui` without arguments prints command help and exits successfully.
 `kamui -v` and `kamui --version` print only the build version, such as `v0.0.1`
@@ -41,7 +59,8 @@ starts.
 ## Supporting commands
 
 - `status [SSH_DESTINATION]` reports all sessions or one exact destination.
-- `mirror SSH_DESTINATION` explicitly requests the default mirroring operation.
+- `mirror SSH_DESTINATION` is the compatibility spelling for the primary
+  command and accepts the same port-policy flags.
 - `stop SSH_DESTINATION` stops one session, and `stop --all` stops all sessions.
   With no destination, `stop` lists known sessions and exits unsuccessfully
   because it did not stop one.
@@ -61,11 +80,13 @@ Successful `ssh-hook` execution is silent unless the caller requests verbose
 output. The OpenSSH process managed by Kamui always disables `LocalCommand` to
 prevent recursion.
 
-Status includes mirrored ports, ports held by a local process or another Kamui
-session, and discovery or forwarding errors. Mirror details appear below each
-session summary. Port lists wrap at 80 characters. Reconciliation runs every
-five seconds. Existing local or Kamui listeners keep their ports, and losing
-sessions retry. Kamui supports TCP mirroring but not UDP.
+Status includes mirrored ports, excluded ports, ports held by a local process
+or another Kamui session, and discovery or forwarding errors. The `EXCLUDED`
+line lists only excluded ports currently discovered on the remote host. Mirror
+details appear below each session summary. Port lists wrap at 80 characters.
+Reconciliation runs every five seconds. Existing local or Kamui listeners keep
+their ports, and losing sessions retry. Kamui supports TCP mirroring but not
+UDP.
 
 ## Exit behavior
 

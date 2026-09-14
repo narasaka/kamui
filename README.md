@@ -23,14 +23,14 @@ The destination is whatever you already pass to `ssh`: an alias from
 OpenSSH client unchanged and manages that connection itself, so you do not run
 `ssh` first.
 
-Kamui discovers listening TCP ports on the remote machine and binds the same
+Kamui discovers listening TCP ports on the remote machine and binds eligible
 ports on local `127.0.0.1` and `::1`. When a remote service listens on port
 3000, `http://localhost:3000` works in your normal browser, in `curl`, and in
 any other local TCP client. Kamui installs nothing on the remote machine.
 
 > [!WARNING]
-> The primary command exposes the selected remote host's listening TCP services
-> to every process on your local machine through loopback. Browsers also give
+> The primary command exposes the selected remote host's eligible listening TCP
+> services to every process on your local machine through loopback. Browsers give
 > those services the security treatment associated with `localhost`. Use Kamui
 > only with hosts and services you trust.
 
@@ -119,6 +119,12 @@ Start remote services as you normally do. When a service listens on remote
 port 3000, open `http://localhost:3000` in your local browser. You do not need
 to declare the port to Kamui or change the service's bind address.
 
+Kamui excludes system ports 1 through 1023 by default. Include one when needed:
+
+```sh
+kamui foo --include-port 443
+```
+
 Inspect or stop the session with:
 
 ```sh
@@ -182,7 +188,7 @@ The primary command accepts exactly one OpenSSH destination and enables TCP
 mirroring:
 
 ```sh
-kamui SSH_DESTINATION
+kamui SSH_DESTINATION [--include-port PORT_OR_RANGE] [--exclude-port PORT_OR_RANGE]
 ```
 
 `kamui mirror SSH_DESTINATION` remains as a compatibility spelling for the same
@@ -221,10 +227,11 @@ See [the CLI contract](docs/cli.md) and
 
 ## How TCP mirroring works
 
-Kamui discovers listening remote TCP ports every five seconds. For each port,
-it creates same-numbered listeners on local `127.0.0.1` and `::1`. It carries
-accepted connections through its OpenSSH transport to the same port on the
-remote loopback interface. It tries remote IPv4 first and remote IPv6 second.
+Kamui discovers listening remote TCP ports every five seconds. It excludes
+ports 1 through 1023 by default. For each eligible port, it creates same-numbered
+listeners on local `127.0.0.1` and `::1`. It carries accepted connections
+through its OpenSSH transport to the same port on the remote loopback interface.
+It tries remote IPv4 first and remote IPv6 second.
 
 A port becomes active only when Kamui can bind both local loopback addresses.
 An existing local listener keeps its port. If two Kamui destinations report the
@@ -232,6 +239,10 @@ same port, the first active mirror keeps it. The other session reports a
 conflict in `kamui status` and retries every five seconds. It claims the port
 after the current owner releases it. A local process that starts after Kamui
 has claimed a port receives `address already in use`.
+
+`kamui status` reports excluded ports separately from conflicts. Repeating
+`kamui foo` applies the current configuration to the running mirror. Port flags
+replace that policy for the active session without restarting its SSH transport.
 
 Discovery uses `ss`, `lsof`, or `netstat` on the remote host. A discovery error
 appears in `kamui status` and does not close current listeners. Kamui limits

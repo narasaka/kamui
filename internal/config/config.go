@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
+	"strings"
 	"time"
 
+	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 )
@@ -19,14 +22,16 @@ type Loader struct {
 	Path string
 }
 
-// Overrides contains explicitly supplied command-line values. Nil means the
-// corresponding flag was not supplied.
+// Overrides contains explicitly supplied command-line values. A nil pointer
+// or slice means the corresponding flag was not supplied.
 type Overrides struct {
 	Browser           *string
 	Loopback          *string
 	OpenBrowserOnSSH  *bool
 	IdleTimeout       *time.Duration
 	StopBrowserOnStop *bool
+	IncludePorts      []string
+	ExcludePorts      []string
 }
 
 // Effective is the fully resolved configuration for one destination.
@@ -36,6 +41,7 @@ type Effective struct {
 	OpenBrowserOnSSH  bool
 	IdleTimeout       time.Duration
 	StopBrowserOnStop bool
+	PortPolicy        mirror.PortPolicy
 }
 
 type fileConfig struct {
@@ -45,16 +51,23 @@ type fileConfig struct {
 	OpenBrowserOnSSH  *bool                 `json:"openBrowserOnSSH"`
 	IdleTimeout       string                `json:"idleTimeout"`
 	StopBrowserOnStop *bool                 `json:"stopBrowserOnStop"`
+	Ports             portConfig            `json:"ports"`
 	Hosts             map[string]hostConfig `json:"hosts"`
 }
 
 type hostConfig struct {
-	Browser           string `json:"browser"`
-	BrowserLoopback   string `json:"browserLoopback"`
-	Loopback          string `json:"loopback"`
-	OpenBrowserOnSSH  *bool  `json:"openBrowserOnSSH"`
-	IdleTimeout       string `json:"idleTimeout"`
-	StopBrowserOnStop *bool  `json:"stopBrowserOnStop"`
+	Browser           string     `json:"browser"`
+	BrowserLoopback   string     `json:"browserLoopback"`
+	Loopback          string     `json:"loopback"`
+	OpenBrowserOnSSH  *bool      `json:"openBrowserOnSSH"`
+	IdleTimeout       string     `json:"idleTimeout"`
+	StopBrowserOnStop *bool      `json:"stopBrowserOnStop"`
+	Ports             portConfig `json:"ports"`
+}
+
+type portConfig struct {
+	Include []string `json:"include"`
+	Exclude []string `json:"exclude"`
 }
 
 // Resolve applies CLI, host, global, then built-in precedence.
@@ -85,6 +98,7 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 	effective := Effective{
 		Browser: file.DefaultBrowser,
 	}
+	var hostPorts portConfig
 	globalLoopback, err := configuredBrowserLoopback(file.BrowserLoopback, file.Loopback, "global configuration")
 	if err != nil {
 		return Effective{}, err
@@ -112,6 +126,7 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 	}
 
 	if host, ok := file.Hosts[destination.String()]; ok {
+		hostPorts = host.Ports
 		if host.Browser != "" {
 			effective.Browser = host.Browser
 		}
@@ -163,8 +178,102 @@ func (l Loader) Resolve(ctx context.Context, destination session.Destination, ov
 	if overrides.StopBrowserOnStop != nil {
 		effective.StopBrowserOnStop = *overrides.StopBrowserOnStop
 	}
+	effective.PortPolicy, err = resolvePortPolicy(file.Ports, hostPorts, overrides)
+	if err != nil {
+		return Effective{}, err
+	}
 
 	return effective, nil
+}
+
+func resolvePortPolicy(global, host portConfig, overrides Overrides) (mirror.PortPolicy, error) {
+	excluded := make([]bool, 1<<16)
+	defaultPolicy := mirror.DefaultPortPolicy()
+	for port := 1; port < len(excluded); port++ {
+		excluded[port] = defaultPolicy.Excludes(uint16(port))
+	}
+	for _, rules := range []struct {
+		location string
+		ports    portConfig
+	}{
+		{location: "global ports", ports: global},
+		{location: "host ports", ports: host},
+		{location: "command-line ports", ports: portConfig{Include: overrides.IncludePorts, Exclude: overrides.ExcludePorts}},
+	} {
+		if err := applyPortRules(excluded, rules.ports, rules.location); err != nil {
+			return mirror.PortPolicy{}, err
+		}
+	}
+	return mirror.NewPortPolicy(excludedPortRanges(excluded)), nil
+}
+
+func applyPortRules(excluded []bool, configured portConfig, location string) error {
+	for _, spec := range configured.Exclude {
+		portRange, err := parsePortRange(spec)
+		if err != nil {
+			return fmt.Errorf("parse %s.exclude: %w", location, err)
+		}
+		for port := int(portRange.Start); port <= int(portRange.End); port++ {
+			excluded[port] = true
+		}
+	}
+	for _, spec := range configured.Include {
+		portRange, err := parsePortRange(spec)
+		if err != nil {
+			return fmt.Errorf("parse %s.include: %w", location, err)
+		}
+		for port := int(portRange.Start); port <= int(portRange.End); port++ {
+			excluded[port] = false
+		}
+	}
+	return nil
+}
+
+func parsePortRange(spec string) (mirror.PortRange, error) {
+	value := strings.TrimSpace(spec)
+	startText, endText, hasRange := strings.Cut(value, "-")
+	if !hasRange {
+		endText = startText
+	}
+	if startText == "" || endText == "" || strings.Contains(endText, "-") {
+		return mirror.PortRange{}, fmt.Errorf("invalid port or range %q", spec)
+	}
+	parsePort := func(text string) (uint16, error) {
+		value, err := strconv.ParseUint(strings.TrimSpace(text), 10, 16)
+		if err != nil || value == 0 {
+			return 0, fmt.Errorf("invalid TCP port %q", strings.TrimSpace(text))
+		}
+		return uint16(value), nil
+	}
+	start, err := parsePort(startText)
+	if err != nil {
+		return mirror.PortRange{}, err
+	}
+	end, err := parsePort(endText)
+	if err != nil {
+		return mirror.PortRange{}, err
+	}
+	if start > end {
+		return mirror.PortRange{}, fmt.Errorf("port range %q starts after it ends", spec)
+	}
+	return mirror.PortRange{Start: start, End: end}, nil
+}
+
+func excludedPortRanges(excluded []bool) []mirror.PortRange {
+	var ranges []mirror.PortRange
+	for start := 1; start < len(excluded); {
+		if !excluded[start] {
+			start++
+			continue
+		}
+		end := start
+		for end+1 < len(excluded) && excluded[end+1] {
+			end++
+		}
+		ranges = append(ranges, mirror.PortRange{Start: uint16(start), End: uint16(end)})
+		start = end + 1
+	}
+	return ranges
 }
 
 func configuredBrowserLoopback(current, legacy, location string) (string, error) {

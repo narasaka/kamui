@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -357,6 +359,58 @@ func TestManagerAddsMirrorToBrowserSessionWithoutRelaunching(t *testing.T) {
 	}
 }
 
+func TestManagerUpdatesPortPolicyOnExistingMirror(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	launcher := &managerLauncher{}
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:        ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second},
+		MirrorDiscoverer: staticDiscoverer{ports: []uint16{port}},
+		MirrorInterval:   time.Hour,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	excluded := mirror.NewPortPolicy([]mirror.PortRange{{Start: port, End: port}})
+	first, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true, EnableMirror: true, PortPolicy: &excluded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(first.Session.Mirror.ExcludedPorts, []uint16{port}) {
+		t.Fatalf("initial mirror status = %#v, want port %d excluded", first.Session.Mirror, port)
+	}
+
+	included := mirror.NewPortPolicy(nil)
+	second, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true, EnableMirror: true, PortPolicy: &included,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(second.Session.Mirror.MirroredPorts, []uint16{port}) || len(second.Session.Mirror.ExcludedPorts) != 0 {
+		t.Fatalf("updated mirror status = %#v, want port %d mirrored", second.Session.Mirror, port)
+	}
+	if second.Session.Proxy != first.Session.Proxy || launcher.startCount() != 1 {
+		t.Fatalf("policy update recreated session: proxies %s and %s, SSH starts %d", first.Session.Proxy, second.Session.Proxy, launcher.startCount())
+	}
+
+	third, err := manager.Execute(context.Background(), session.Command{
+		Operation: session.Ensure, Destination: destination, SkipBrowser: true, EnableMirror: true, PortPolicy: &excluded,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(third.Session.Mirror.ExcludedPorts, []uint16{port}) || len(third.Session.Mirror.MirroredPorts) != 0 {
+		t.Fatalf("second policy update = %#v, want port %d excluded again", third.Session.Mirror, port)
+	}
+	listeners := claimDualStackPort(t, port)
+	for _, listener := range listeners {
+		_ = listener.Close()
+	}
+}
+
 type staticDiscoverer struct{ ports []uint16 }
 
 func (d staticDiscoverer) ListeningPorts(context.Context, string) ([]uint16, error) {
@@ -364,6 +418,39 @@ func (d staticDiscoverer) ListeningPorts(context.Context, string) ([]uint16, err
 }
 
 var _ mirror.Discoverer = staticDiscoverer{}
+
+func availableDualStackPort(t *testing.T) uint16 {
+	t.Helper()
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(listener.Addr().(*net.TCPAddr).Port)
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := net.Listen("tcp6", net.JoinHostPort("::1", fmt.Sprint(port)))
+	if err != nil {
+		t.Skipf("IPv6 loopback is unavailable: %v", err)
+	}
+	_ = probe.Close()
+	return port
+}
+
+func claimDualStackPort(t *testing.T, port uint16) []net.Listener {
+	t.Helper()
+	portText := fmt.Sprint(port)
+	ipv4, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", portText))
+	if err != nil {
+		t.Fatalf("claim released IPv4 port %d: %v", port, err)
+	}
+	ipv6, err := net.Listen("tcp6", net.JoinHostPort("::1", portText))
+	if err != nil {
+		_ = ipv4.Close()
+		t.Fatalf("claim released IPv6 port %d: %v", port, err)
+	}
+	return []net.Listener{ipv4, ipv6}
+}
 
 func TestManagerStopsDedicatedBrowserWhenConfigured(t *testing.T) {
 	t.Parallel()

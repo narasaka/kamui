@@ -29,7 +29,7 @@ import (
 const maximumMessageSize = 1 << 20
 
 // ProtocolVersion changes when the controller wire contract is incompatible.
-const ProtocolVersion = 2
+const ProtocolVersion = 3
 
 // Identity is the authenticated protocol/build identity of one controller.
 type Identity struct {
@@ -167,6 +167,9 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 		LoopbackMode:      command.LoopbackMode,
 		Unattended:        command.Unattended,
 		EnableMirror:      command.EnableMirror,
+	}
+	if command.PortPolicy != nil {
+		request.PortPolicy = &wirePortPolicy{ExcludedRanges: command.PortPolicy.ExcludedRanges()}
 	}
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return session.Result{}, fmt.Errorf("send controller command: %w", err)
@@ -318,6 +321,10 @@ func (s *Server) handle(connection net.Conn) {
 		Unattended:        request.Unattended,
 		EnableMirror:      request.EnableMirror,
 	}
+	if request.PortPolicy != nil {
+		policy := mirror.NewPortPolicy(request.PortPolicy.ExcludedRanges)
+		command.PortPolicy = &policy
+	}
 	if request.Async {
 		_ = json.NewEncoder(connection).Encode(wireResponse{})
 		go func() { _, _ = s.manager.Execute(s.ctx, command) }()
@@ -399,10 +406,15 @@ type wireRequest struct {
 	LoopbackMode      proxy.LoopbackMode `json:"loopbackMode,omitempty"`
 	Unattended        bool               `json:"unattended,omitempty"`
 	EnableMirror      bool               `json:"enableMirror,omitempty"`
+	PortPolicy        *wirePortPolicy    `json:"portPolicy,omitempty"`
 	Probe             bool               `json:"probe,omitempty"`
 	Shutdown          bool               `json:"shutdown,omitempty"`
 	ExpectedProtocol  int                `json:"expectedProtocol,omitempty"`
 	ExpectedBuild     string             `json:"expectedBuild,omitempty"`
+}
+
+type wirePortPolicy struct {
+	ExcludedRanges []mirror.PortRange `json:"excludedRanges"`
 }
 
 type wireStatus struct {
@@ -418,6 +430,7 @@ type wireStatus struct {
 type wireMirrorStatus struct {
 	Enabled         bool              `json:"enabled,omitempty"`
 	MirroredPorts   []uint16          `json:"mirroredPorts,omitempty"`
+	ExcludedPorts   []uint16          `json:"excludedPorts,omitempty"`
 	ConflictedPorts []mirror.Conflict `json:"conflictedPorts,omitempty"`
 	LastError       string            `json:"lastError,omitempty"`
 }
@@ -451,6 +464,7 @@ func makeWireStatus(status session.SessionStatus) wireStatus {
 		Proxy: status.Proxy.String(), LoopbackMode: status.LoopbackMode, Browser: status.Browser,
 		Mirror: wireMirrorStatus{
 			Enabled: status.Mirror.Enabled, MirroredPorts: status.Mirror.MirroredPorts,
+			ExcludedPorts:   status.Mirror.ExcludedPorts,
 			ConflictedPorts: status.Mirror.ConflictedPorts,
 		},
 	}
@@ -496,6 +510,7 @@ func (s wireStatus) sessionStatus() (session.SessionStatus, error) {
 		LoopbackMode: s.LoopbackMode, Browser: s.Browser,
 		Mirror: mirror.Status{
 			Enabled: s.Mirror.Enabled, MirroredPorts: s.Mirror.MirroredPorts,
+			ExcludedPorts:   s.Mirror.ExcludedPorts,
 			ConflictedPorts: s.Mirror.ConflictedPorts,
 		},
 	}

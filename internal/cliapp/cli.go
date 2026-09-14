@@ -49,6 +49,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 		Reader:    streams.In,
 		Writer:    streams.Out,
 		ErrWriter: streams.ErrOut,
+		Flags:     mirrorPortFlags(),
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			if cmd.NArg() == 0 {
 				return cli.ShowRootCommandHelp(cmd)
@@ -65,12 +66,13 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			}
 			result, err := application.Execute(ctx, kamuiapp.Request{
 				Operation: kamuiapp.Mirror, Destination: destination.String(),
+				IncludePorts: cmd.StringSlice("include-port"), ExcludePorts: cmd.StringSlice("exclude-port"),
 			})
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(streams.Out, "%s mirroring enabled; mirrored %s; conflicts %s\n",
-				destination, formatPorts(result.Session.Mirror.MirroredPorts), formatConflicts(result.Session.Mirror.ConflictedPorts))
+			_, err = fmt.Fprintf(streams.Out, "%s mirroring enabled; mirrored %s; excluded %s; conflicts %s\n",
+				destination, formatPorts(result.Session.Mirror.MirroredPorts), formatPorts(result.Session.Mirror.ExcludedPorts), formatConflicts(result.Session.Mirror.ConflictedPorts))
 			return err
 		},
 	}
@@ -128,6 +130,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			Name:      "mirror",
 			Usage:     "mirror remote TCP listeners on local loopback",
 			ArgsUsage: "SSH_DESTINATION",
+			Flags:     mirrorPortFlags(),
 			Action: func(ctx context.Context, cmd *cli.Command) error {
 				if err := exactlyOneDestination(cmd); err != nil {
 					return err
@@ -137,12 +140,13 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				}
 				result, err := application.Execute(ctx, kamuiapp.Request{
 					Operation: kamuiapp.Mirror, Destination: cmd.Args().First(),
+					IncludePorts: cmd.StringSlice("include-port"), ExcludePorts: cmd.StringSlice("exclude-port"),
 				})
 				if err != nil {
 					return err
 				}
-				_, err = fmt.Fprintf(streams.Out, "%s mirroring enabled; mirrored %s; conflicts %s\n",
-					cmd.Args().First(), formatPorts(result.Session.Mirror.MirroredPorts), formatConflicts(result.Session.Mirror.ConflictedPorts))
+				_, err = fmt.Fprintf(streams.Out, "%s mirroring enabled; mirrored %s; excluded %s; conflicts %s\n",
+					cmd.Args().First(), formatPorts(result.Session.Mirror.MirroredPorts), formatPorts(result.Session.Mirror.ExcludedPorts), formatConflicts(result.Session.Mirror.ConflictedPorts))
 				return err
 			},
 		},
@@ -340,6 +344,13 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	return command
 }
 
+func mirrorPortFlags() []cli.Flag {
+	return []cli.Flag{
+		&cli.StringSliceFlag{Name: "include-port", Usage: "mirror a port or inclusive port range (repeatable)", Local: true},
+		&cli.StringSliceFlag{Name: "exclude-port", Usage: "exclude a port or inclusive port range (repeatable)", Local: true},
+	}
+}
+
 func printStatuses(writer io.Writer, statuses []session.SessionStatus, verbose bool) error {
 	table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
 	if _, err := fmt.Fprintln(table, "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tMIRROR"); err != nil {
@@ -378,8 +389,11 @@ func printStatuses(writer io.Writer, statuses []session.SessionStatus, verbose b
 				return err
 			}
 		}
-		if status.Mirror.Enabled || len(status.Mirror.MirroredPorts) > 0 || len(status.Mirror.ConflictedPorts) > 0 || status.Mirror.LastError != nil {
+		if status.Mirror.Enabled || len(status.Mirror.MirroredPorts) > 0 || len(status.Mirror.ExcludedPorts) > 0 || len(status.Mirror.ConflictedPorts) > 0 || status.Mirror.LastError != nil {
 			if err := writeWrappedStatusDetail(writer, "MIRRORED", portValues(status.Mirror.MirroredPorts), true); err != nil {
+				return err
+			}
+			if err := writeWrappedStatusDetail(writer, "EXCLUDED", portValues(status.Mirror.ExcludedPorts), true); err != nil {
 				return err
 			}
 			if err := writeWrappedStatusDetail(writer, "CONFLICTS", conflictValues(status.Mirror.ConflictedPorts), true); err != nil {
@@ -407,7 +421,7 @@ const statusLineWidth = 80
 const statusDetailLabelWidth = len("MIRROR ERROR:")
 
 func hasStatusDetails(status session.SessionStatus, verbose bool) bool {
-	return status.Mirror.Enabled || len(status.Mirror.MirroredPorts) > 0 || len(status.Mirror.ConflictedPorts) > 0 ||
+	return status.Mirror.Enabled || len(status.Mirror.MirroredPorts) > 0 || len(status.Mirror.ExcludedPorts) > 0 || len(status.Mirror.ConflictedPorts) > 0 ||
 		status.Mirror.LastError != nil || (verbose && status.LastError != nil)
 }
 

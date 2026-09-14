@@ -31,11 +31,12 @@ type Discoverer interface {
 // transport.
 type DialFunc func(context.Context, string, string) (net.Conn, error)
 
-// Options controls reconciliation. A zero interval uses
-// DefaultReconcileInterval.
+// Options controls reconciliation and port selection. A zero interval uses
+// DefaultReconcileInterval. A nil policy uses DefaultPortPolicy.
 type Options struct {
 	ReconcileInterval time.Duration
 	DiscoveryTimeout  time.Duration
+	PortPolicy        *PortPolicy
 }
 
 // Conflict describes a desired remote port that could not be claimed locally.
@@ -48,6 +49,7 @@ type Conflict struct {
 type Status struct {
 	Enabled         bool
 	MirroredPorts   []uint16
+	ExcludedPorts   []uint16
 	ConflictedPorts []Conflict
 	LastError       error
 }
@@ -61,9 +63,12 @@ type Running struct {
 	dial             DialFunc
 	interval         time.Duration
 	discoveryTimeout time.Duration
+	portPolicy       PortPolicy
 
+	reconcileMu      sync.Mutex
 	mu               sync.Mutex
 	forwards         map[uint16]*portForward
+	excluded         map[uint16]struct{}
 	conflicts        map[uint16]string
 	forwardingErrors map[uint16]error
 	lastError        error
@@ -92,11 +97,15 @@ func Start(ctx context.Context, destination string, discoverer Discoverer, dial 
 	if discoveryTimeout < 0 {
 		return nil, fmt.Errorf("mirror discovery timeout must be positive")
 	}
+	portPolicy := DefaultPortPolicy()
+	if options.PortPolicy != nil {
+		portPolicy = *options.PortPolicy
+	}
 	runningContext, cancel := context.WithCancel(ctx)
 	running := &Running{
 		ctx: runningContext, cancel: cancel, destination: destination,
-		discoverer: discoverer, dial: dial, interval: interval, discoveryTimeout: discoveryTimeout,
-		forwards: make(map[uint16]*portForward), conflicts: make(map[uint16]string), forwardingErrors: make(map[uint16]error), done: make(chan struct{}),
+		discoverer: discoverer, dial: dial, interval: interval, discoveryTimeout: discoveryTimeout, portPolicy: portPolicy,
+		forwards: make(map[uint16]*portForward), excluded: make(map[uint16]struct{}), conflicts: make(map[uint16]string), forwardingErrors: make(map[uint16]error), done: make(chan struct{}),
 	}
 	running.reconcile()
 	go running.loop()
@@ -118,6 +127,12 @@ func (r *Running) loop() {
 }
 
 func (r *Running) reconcile() {
+	r.reconcileMu.Lock()
+	defer r.reconcileMu.Unlock()
+	r.reconcileOnce()
+}
+
+func (r *Running) reconcileOnce() {
 	discoveryContext, cancel := context.WithTimeout(r.ctx, r.discoveryTimeout)
 	ports, err := r.discoverer.ListeningPorts(discoveryContext, r.destination)
 	cancel()
@@ -130,9 +145,14 @@ func (r *Running) reconcile() {
 		return
 	}
 	desired := make(map[uint16]struct{}, len(ports))
+	excluded := make(map[uint16]struct{})
 	for _, port := range ports {
 		if port == 0 {
 			err = errors.Join(err, fmt.Errorf("discovery returned invalid TCP port 0"))
+			continue
+		}
+		if r.portPolicy.Excludes(port) {
+			excluded[port] = struct{}{}
 			continue
 		}
 		desired[port] = struct{}{}
@@ -144,6 +164,7 @@ func (r *Running) reconcile() {
 		return
 	}
 	r.lastError = err
+	r.excluded = excluded
 	removed := make(map[uint16]*portForward)
 	for port, forward := range r.forwards {
 		if _, ok := desired[port]; ok {
@@ -193,6 +214,22 @@ func (r *Running) reconcile() {
 	r.mu.Unlock()
 }
 
+// SetPortPolicy replaces the effective policy and immediately reconciles the
+// currently discovered listeners.
+func (r *Running) SetPortPolicy(policy PortPolicy) error {
+	r.reconcileMu.Lock()
+	defer r.reconcileMu.Unlock()
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return fmt.Errorf("mirror is closed")
+	}
+	r.portPolicy = policy
+	r.mu.Unlock()
+	r.reconcileOnce()
+	return nil
+}
+
 // Status returns a sorted snapshot safe for display or wire transport.
 func (r *Running) Status() Status {
 	r.mu.Lock()
@@ -201,10 +238,14 @@ func (r *Running) Status() Status {
 	for port := range r.forwards {
 		status.MirroredPorts = append(status.MirroredPorts, port)
 	}
+	for port := range r.excluded {
+		status.ExcludedPorts = append(status.ExcludedPorts, port)
+	}
 	for port, message := range r.conflicts {
 		status.ConflictedPorts = append(status.ConflictedPorts, Conflict{Port: port, Error: message})
 	}
 	sort.Slice(status.MirroredPorts, func(i, j int) bool { return status.MirroredPorts[i] < status.MirroredPorts[j] })
+	sort.Slice(status.ExcludedPorts, func(i, j int) bool { return status.ExcludedPorts[i] < status.ExcludedPorts[j] })
 	sort.Slice(status.ConflictedPorts, func(i, j int) bool { return status.ConflictedPorts[i].Port < status.ConflictedPorts[j].Port })
 	errorPorts := make([]uint16, 0, len(r.forwardingErrors))
 	for port := range r.forwardingErrors {
@@ -247,6 +288,7 @@ func (r *Running) Close() error {
 		forwards = append(forwards, forward)
 	}
 	r.forwards = make(map[uint16]*portForward)
+	r.excluded = make(map[uint16]struct{})
 	r.conflicts = make(map[uint16]string)
 	r.forwardingErrors = make(map[uint16]error)
 	r.mu.Unlock()

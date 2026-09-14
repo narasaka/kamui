@@ -16,6 +16,7 @@ import (
 	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/config"
 	"github.com/narasaka/kamui/internal/controller"
+	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/state"
@@ -39,13 +40,15 @@ const (
 
 // Request contains presentation-neutral command values.
 type Request struct {
-	Operation   Operation
-	Destination string
-	Browser     browser.Selection
-	Loopback    string
-	URLs        []string
-	All         bool
-	JSON        bool
+	Operation    Operation
+	Destination  string
+	Browser      browser.Selection
+	Loopback     string
+	URLs         []string
+	All          bool
+	JSON         bool
+	IncludePorts []string
+	ExcludePorts []string
 }
 
 // Result is the observable command result.
@@ -122,6 +125,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 	idleTimeout := time.Duration(0)
 	stopBrowserOnStop := false
 	loopbackMode := proxy.RemoteOnly
+	var portPolicy *mirror.PortPolicy
 	if request.Operation == Ensure || request.Operation == SSHHook || request.Operation == Mirror {
 		var overrides config.Overrides
 		if selection.Explicit != "" {
@@ -130,6 +134,8 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		if request.Loopback != "" {
 			overrides.Loopback = &request.Loopback
 		}
+		overrides.IncludePorts = request.IncludePorts
+		overrides.ExcludePorts = request.ExcludePorts
 		effective, err := a.config.Resolve(ctx, destination, overrides)
 		if err != nil {
 			return Result{}, err
@@ -151,6 +157,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		idleTimeout = effective.IdleTimeout
 		stopBrowserOnStop = effective.StopBrowserOnStop
 		loopbackMode = effective.LoopbackMode
+		portPolicy = &effective.PortPolicy
 	}
 	command := session.Command{
 		Operation: operation, Destination: destination, Browser: selection, URLs: request.URLs,
@@ -160,6 +167,7 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		LoopbackMode:      loopbackMode,
 		Unattended:        request.Operation == SSHHook,
 		EnableMirror:      request.Operation == Mirror || request.Operation == SSHHook,
+		PortPolicy:        portPolicy,
 	}
 	call := func() (session.Result, error) {
 		if request.Operation == SSHHook {

@@ -57,6 +57,99 @@ func TestLoaderResolvesCLIHostGlobalAndDefaultPrecedence(t *testing.T) {
 	}
 }
 
+func TestLoaderDefaultsToExcludingSystemPorts(t *testing.T) {
+	t.Parallel()
+
+	destination, err := session.ParseDestination("reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective, err := (config.Loader{Path: filepath.Join(t.TempDir(), "missing.json")}).Resolve(
+		context.Background(), destination, config.Overrides{},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, port := range []uint16{1, 22, 80, 443, 1023} {
+		if !effective.PortPolicy.Excludes(port) {
+			t.Errorf("port %d is included, want excluded", port)
+		}
+	}
+	for _, port := range []uint16{1024, 3000, 65535} {
+		if effective.PortPolicy.Excludes(port) {
+			t.Errorf("port %d is excluded, want included", port)
+		}
+	}
+}
+
+func TestLoaderResolvesPortRulesByScope(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.json")
+	contents := `{
+  "ports": {
+    "exclude": ["5432-5433"],
+    "include": ["80"]
+  },
+  "hosts": {
+    "reyna": {
+      "ports": {
+        "exclude": ["80", "3000-3001"],
+        "include": ["443-444"]
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	destination, _ := session.ParseDestination("reyna")
+
+	effective, err := (config.Loader{Path: path}).Resolve(context.Background(), destination, config.Overrides{
+		IncludePorts: []string{"3000-3001", "4001"},
+		ExcludePorts: []string{"4000-4001"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantExcluded := map[uint16]bool{
+		22: true, 80: true, 443: false, 444: false, 1024: false, 3000: false, 3001: false,
+		4000: true, 4001: false, 5432: true, 5433: true,
+	}
+	for port, want := range wantExcluded {
+		if got := effective.PortPolicy.Excludes(port); got != want {
+			t.Errorf("port %d excluded = %t, want %t", port, got, want)
+		}
+	}
+}
+
+func TestLoaderRejectsInvalidPortRules(t *testing.T) {
+	t.Parallel()
+
+	destination, _ := session.ParseDestination("reyna")
+	for name, contents := range map[string]string{
+		"zero":                 `{"ports":{"exclude":["0"]}}`,
+		"above TCP range":      `{"ports":{"exclude":["65536"]}}`,
+		"reversed range":       `{"ports":{"exclude":["443-80"]}}`,
+		"multiple separators":  `{"ports":{"exclude":["80-81-82"]}}`,
+		"non-numeric":          `{"ports":{"include":["https"]}}`,
+		"numeric JSON value":   `{"ports":{"include":[443]}}`,
+		"unknown nested field": `{"ports":{"ignored":["22"]}}`,
+	} {
+		name, contents := name, contents
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "config.json")
+			if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := (config.Loader{Path: path}).Resolve(context.Background(), destination, config.Overrides{}); err == nil {
+				t.Fatalf("Resolve accepted %s", contents)
+			}
+		})
+	}
+}
+
 func TestLoaderRejectsUnknownConfigurationFields(t *testing.T) {
 	t.Parallel()
 

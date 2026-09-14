@@ -17,6 +17,46 @@ import (
 	"github.com/narasaka/kamui/internal/mirror"
 )
 
+func TestSystemPortsAreExcludedByDefault(t *testing.T) {
+	t.Parallel()
+
+	discoverer := &mutableDiscoverer{ports: []uint16{22, 80, 443}}
+	running, err := mirror.Start(context.Background(), "reyna", discoverer, unreachableDial, mirror.Options{ReconcileInterval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+
+	status := running.Status()
+	if !slices.Equal(status.ExcludedPorts, []uint16{22, 80, 443}) {
+		t.Fatalf("excluded ports = %v, want [22 80 443]", status.ExcludedPorts)
+	}
+	if len(status.MirroredPorts) != 0 || len(status.ConflictedPorts) != 0 {
+		t.Fatalf("status = %#v, want only excluded ports", status)
+	}
+}
+
+func TestEffectivePortPolicyExcludesDiscoveredPort(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	discoverer := &mutableDiscoverer{ports: []uint16{port}}
+	policy := mirror.NewPortPolicy([]mirror.PortRange{{Start: port, End: port}})
+	running, err := mirror.Start(context.Background(), "reyna", discoverer, unreachableDial, mirror.Options{
+		ReconcileInterval: 10 * time.Millisecond,
+		PortPolicy:        &policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+
+	status := running.Status()
+	if !slices.Equal(status.ExcludedPorts, []uint16{port}) || len(status.MirroredPorts) != 0 {
+		t.Fatalf("status = %#v, want port %d excluded", status, port)
+	}
+}
+
 func TestRemoteListenerAppearsAndIsReachableOnIPv4AndIPv6(t *testing.T) {
 	t.Parallel()
 
