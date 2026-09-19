@@ -42,6 +42,7 @@ type Command struct {
 	Unattended        bool
 	EnableMirror      bool
 	PortPolicy        *mirror.PortPolicy
+	Diagnostics       io.Writer
 }
 
 // SessionState is the user-visible lifecycle state.
@@ -179,7 +180,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 	if existing := m.sessions[destination.Key()]; existing != nil {
 		state := existing.snapshot().State
 		if state == SessionUnavailable || state == SessionAuthenticationRequired {
-			connection, err := m.connect(m.ctx, destination, command.Unattended)
+			connection, err := m.connect(m.ctx, destination, command.Unattended, command.Diagnostics)
 			if err != nil {
 				return Result{}, err
 			}
@@ -206,7 +207,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 			return Result{}, fmt.Errorf("read saved proxy address: %w", err)
 		}
 	}
-	connection, err := m.connect(m.ctx, destination, command.Unattended)
+	connection, err := m.connect(m.ctx, destination, command.Unattended, command.Diagnostics)
 	if err != nil {
 		m.logger.Warn("Kamui session lifecycle", "event", "ssh_bootstrap_failed", "session_key", destination.Key(), "failure_kind", connectFailureKind(err))
 		return Result{}, fmt.Errorf("SSH authentication or connection failed for %s: %w", destination, err)
@@ -253,12 +254,20 @@ func (m *Manager) addCapabilities(ctx context.Context, managed *managedSession, 
 	managed.mu.RUnlock()
 	if command.EnableMirror && !hasMirror {
 		discoverer := m.mirrorDiscoverer
+		var initialDiagnostics *initialDiagnosticWriter
 		if discoverer == nil {
 			discoverer = mirror.SSHDiscoverer{SSHPath: m.transport.SSHPath}
+		}
+		if diagnosticDiscoverer, ok := discoverer.(mirror.DiagnosticDiscoverer); ok && command.Diagnostics != nil {
+			initialDiagnostics = &initialDiagnosticWriter{writer: command.Diagnostics}
+			discoverer = diagnosticDiscoverer.WithDiagnostics(initialDiagnostics)
 		}
 		runningMirror, err := mirror.Start(managed.ctx, managed.destination.String(), discoverer, func(ctx context.Context, network, address string) (net.Conn, error) {
 			return managed.dial(ctx, network, address)
 		}, mirror.Options{ReconcileInterval: m.mirrorInterval, PortPolicy: command.PortPolicy})
+		if initialDiagnostics != nil {
+			initialDiagnostics.Disable()
+		}
 		if err != nil {
 			return err
 		}
@@ -294,11 +303,35 @@ func (m *Manager) addCapabilities(ctx context.Context, managed *managedSession, 
 	return nil
 }
 
-func (m *Manager) connect(ctx context.Context, destination Destination, unattended bool) (*ssh.Connection, error) {
+type initialDiagnosticWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *initialDiagnosticWriter) Write(value []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.writer == nil {
+		return len(value), nil
+	}
+	return w.writer.Write(value)
+}
+
+func (w *initialDiagnosticWriter) Disable() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.writer = nil
+}
+
+func (m *Manager) connect(ctx context.Context, destination Destination, unattended bool, diagnostics io.Writer) (*ssh.Connection, error) {
 	if unattended {
 		return m.transport.ConnectUnattended(ctx, destination.String())
 	}
-	return m.transport.Connect(ctx, destination.String())
+	transport := m.transport
+	if diagnostics != nil {
+		transport.Stderr = diagnostics
+	}
+	return transport.Connect(ctx, destination.String())
 }
 
 func (m *Manager) open(ctx context.Context, command Command) (Result, error) {

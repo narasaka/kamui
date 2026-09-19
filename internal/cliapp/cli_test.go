@@ -19,6 +19,7 @@ import (
 	kamuiapp "github.com/narasaka/kamui/internal/app"
 	"github.com/narasaka/kamui/internal/cliapp"
 	"github.com/narasaka/kamui/internal/controller"
+	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/ssh"
 	"github.com/narasaka/kamui/internal/state"
@@ -246,6 +247,7 @@ func TestDeprecatedLoopbackAliasRetainsLocalFirstBehavior(t *testing.T) {
 
 func TestPrimaryCommandMirrorsPortsWithoutLaunchingBrowser(t *testing.T) {
 	t.Parallel()
+	const diagnostic = "# Tailscale SSH requires an additional check.\n# To authenticate, visit: https://login.tailscale.com/a/example\n"
 
 	root, err := os.MkdirTemp("/tmp", "kamui-cli-mirror-")
 	if err != nil {
@@ -268,7 +270,7 @@ func TestPrimaryCommandMirrorsPortsWithoutLaunchingBrowser(t *testing.T) {
 	layout := state.NewLayout(root)
 	manager := session.NewManagerWithOptions(session.ManagerOptions{
 		Transport:        ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second},
-		MirrorDiscoverer: cliDiscoverer{ports: []uint16{80, mirroredPort, conflictPort}},
+		MirrorDiscoverer: cliDiscoverer{ports: []uint16{80, mirroredPort, conflictPort}, diagnostic: diagnostic},
 		MirrorInterval:   10 * time.Millisecond,
 	})
 	t.Cleanup(func() { _ = manager.Close() })
@@ -283,8 +285,8 @@ func TestPrimaryCommandMirrorsPortsWithoutLaunchingBrowser(t *testing.T) {
 	if err := command.Run(context.Background(), []string{"kamui", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := errorOutput.String(); got != "" {
-		t.Fatalf("redirected connection progress = %q, want empty", got)
+	if got := errorOutput.String(); got != diagnostic {
+		t.Fatalf("SSH diagnostics = %q, want %q", got, diagnostic)
 	}
 	if got := output.String(); !strings.Contains(got, "● connected") || !strings.Contains(got, "MIRRORED:     "+fmt.Sprint(mirroredPort)) || !strings.Contains(got, "EXCLUDED:     80") || !strings.Contains(got, "CONFLICTS:    "+fmt.Sprint(conflictPort)) || !strings.HasSuffix(got, "\nTo disconnect, run: kamui stop reyna\n") {
 		t.Fatalf("mirror output = %q", got)
@@ -369,10 +371,22 @@ func TestPrimaryCommandAppliesPortFlagsOverHostConfiguration(t *testing.T) {
 	}
 }
 
-type cliDiscoverer struct{ ports []uint16 }
+type cliDiscoverer struct {
+	ports       []uint16
+	diagnostic  string
+	diagnostics io.Writer
+}
 
 func (d cliDiscoverer) ListeningPorts(context.Context, string) ([]uint16, error) {
+	if d.diagnostics != nil {
+		_, _ = io.WriteString(d.diagnostics, d.diagnostic)
+	}
 	return append([]uint16(nil), d.ports...), nil
+}
+
+func (d cliDiscoverer) WithDiagnostics(writer io.Writer) mirror.Discoverer {
+	d.diagnostics = writer
+	return d
 }
 
 func availablePort(t *testing.T) uint16 {

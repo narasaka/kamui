@@ -2,6 +2,7 @@ package controller_test
 
 import (
 	"context"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -16,6 +17,60 @@ import (
 	"github.com/narasaka/kamui/internal/ssh"
 	"github.com/narasaka/kamui/internal/state"
 )
+
+func TestClientStreamsBootstrapDiagnosticsBeforeCommandCompletes(t *testing.T) {
+	t.Parallel()
+
+	const diagnostic = "# Tailscale SSH requires an additional check.\n# To authenticate, visit: https://login.tailscale.com/a/example\n"
+	root, err := os.MkdirTemp("/tmp", "kamui-controller-diagnostics-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	launcher := &gatedDiagnosticLauncher{
+		diagnostic: diagnostic,
+		written:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	destination, _ := session.ParseDestination("reyna")
+	diagnostics := make(chan string, 1)
+	client := controller.Client{Layout: layout, Diagnostics: channelWriter{values: diagnostics}}
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Execute(context.Background(), session.Command{
+			Operation: session.Ensure, Destination: destination, SkipBrowser: true,
+		})
+		done <- err
+	}()
+
+	select {
+	case <-launcher.written:
+	case <-time.After(time.Second):
+		t.Fatal("fake SSH process did not write its authentication diagnostic")
+	}
+	select {
+	case got := <-diagnostics:
+		if got != diagnostic {
+			close(launcher.release)
+			t.Fatalf("client diagnostics = %q, want %q before command completes", got, diagnostic)
+		}
+	case <-time.After(time.Second):
+		close(launcher.release)
+		t.Fatal("client did not receive the SSH diagnostic before command completion")
+	}
+	close(launcher.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestTenConcurrentClientsCreateOneHostSession(t *testing.T) {
 	t.Parallel()
@@ -209,6 +264,31 @@ func (d controllerDiscoverer) ListeningPorts(context.Context, string) ([]uint16,
 type controllerLauncher struct {
 	mu     sync.Mutex
 	starts int
+}
+
+type gatedDiagnosticLauncher struct {
+	base       controllerLauncher
+	diagnostic string
+	written    chan struct{}
+	release    chan struct{}
+}
+
+type channelWriter struct {
+	values chan<- string
+}
+
+func (w channelWriter) Write(value []byte) (int, error) {
+	w.values <- string(value)
+	return len(value), nil
+}
+
+func (l *gatedDiagnosticLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	if _, err := io.WriteString(request.Stderr, l.diagnostic); err != nil {
+		return nil, err
+	}
+	close(l.written)
+	<-l.release
+	return l.base.Start(request)
 }
 
 func (l *controllerLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {

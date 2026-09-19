@@ -76,6 +76,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			result, err := application.Execute(ctx, kamuiapp.Request{
 				Operation: kamuiapp.Mirror, Destination: destination.String(),
 				IncludePorts: cmd.StringSlice("include-port"), ExcludePorts: cmd.StringSlice("exclude-port"),
+				Diagnostics: streams.ErrOut,
 			})
 			clearErr := progress.stop()
 			if err != nil {
@@ -126,6 +127,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 					Destination: destination.String(),
 					Browser:     browser.Selection{Explicit: cmd.String("browser"), Family: cmd.String("browser-family")},
 					Loopback:    loopback,
+					Diagnostics: streams.ErrOut,
 				})
 				if err != nil {
 					return err
@@ -156,6 +158,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				result, err := application.Execute(ctx, kamuiapp.Request{
 					Operation: kamuiapp.Mirror, Destination: cmd.Args().First(),
 					IncludePorts: cmd.StringSlice("include-port"), ExcludePorts: cmd.StringSlice("exclude-port"),
+					Diagnostics: streams.ErrOut,
 				})
 				if err != nil {
 					return err

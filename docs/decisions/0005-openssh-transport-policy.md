@@ -23,10 +23,14 @@ connected child exits, Kamui tries at most five unattended reconnects with
 exponential delays from 100 ms through 1.6 seconds. Unattended attempts add
 `BatchMode=yes`; non-transient failure stops retries until an explicit command.
 Effective `ForwardAgent yes` configuration produces a warning but is not
-changed. Bootstrap stderr is copied to the invoking terminal and a persistent
-OpenSSH log for diagnosis. After readiness, only the log receives stderr so a
-detached controller cannot continue writing channel-level failures into the
-launching shell; `kamui logs` exposes recent output and can follow new output.
+changed. Bootstrap stderr is copied through the authenticated controller
+connection to the invoking terminal and to a persistent OpenSSH log. After
+readiness, only the log receives stderr so a detached controller cannot keep
+writing channel-level failures into the launching shell; `kamui logs` exposes
+recent output and can follow new output. The first listener-discovery SSH
+process also relays stderr to the synchronous command. Later reconciliation
+runs report failures through session status without retaining that command's
+terminal.
 
 ## Consequences
 

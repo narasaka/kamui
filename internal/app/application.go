@@ -49,6 +49,7 @@ type Request struct {
 	JSON         bool
 	IncludePorts []string
 	ExcludePorts []string
+	Diagnostics  io.Writer
 }
 
 // Result is the observable command result.
@@ -170,10 +171,12 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		PortPolicy:        portPolicy,
 	}
 	call := func() (session.Result, error) {
+		client := a.client
+		client.Diagnostics = request.Diagnostics
 		if request.Operation == SSHHook {
-			return session.Result{}, a.client.ExecuteAsync(ctx, command)
+			return session.Result{}, client.ExecuteAsync(ctx, command)
 		}
-		return a.client.Execute(ctx, command)
+		return client.Execute(ctx, command)
 	}
 	if err := a.ensureCompatibleController(ctx); err != nil {
 		return Result{}, err

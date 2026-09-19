@@ -27,6 +27,12 @@ type Discoverer interface {
 	ListeningPorts(context.Context, string) ([]uint16, error)
 }
 
+// DiagnosticDiscoverer can stream subprocess diagnostics during discovery.
+type DiagnosticDiscoverer interface {
+	Discoverer
+	WithDiagnostics(io.Writer) Discoverer
+}
+
 // DialFunc opens a TCP connection through the destination's existing SSH
 // transport.
 type DialFunc func(context.Context, string, string) (net.Conn, error)
