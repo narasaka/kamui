@@ -32,6 +32,18 @@ destination. It also replaces the running mirror's port policy and reconciles
 listeners immediately without replacing the SSH transport. Command-line rules
 last until another mirror command updates the session or the session stops.
 
+In an interactive terminal, the primary command shows a neutral rotating
+symbol while it contacts OpenSSH, then clears that line. On success it
+prints the same session summary and mirror details as `kamui status
+SSH_DESTINATION`. Interactive terminals show connected states in green and
+command failures in red; redirected output has no progress message or ANSI
+color codes.
+The successful primary command ends with the exact `kamui stop SSH_DESTINATION`
+command needed to disconnect the session.
+OpenSSH bootstrap diagnostics are included in a failed connection error as well
+as the OpenSSH log, so authentication instructions remain visible to the
+calling terminal.
+
 Running `kamui` without arguments prints command help and exits successfully.
 `kamui -v` and `kamui --version` print only the build version, such as `v0.0.1`
 for a release or `dev` for a development build.
@@ -84,6 +96,8 @@ Status includes mirrored ports, excluded ports, ports held by a local process
 or another Kamui session, and discovery or forwarding errors. The `EXCLUDED`
 line lists only excluded ports currently discovered on the remote host. Mirror
 details appear below each session summary. Port lists wrap at 80 characters.
+Browser and proxy columns appear only when the displayed results include a
+session with the dedicated browser enabled.
 Reconciliation runs every five seconds. Existing local or Kamui listeners keep
 their ports, and losing sessions retry. Kamui supports TCP mirroring but not
 UDP.
