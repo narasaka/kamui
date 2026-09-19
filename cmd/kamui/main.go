@@ -35,7 +35,7 @@ func main() {
 	})
 	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
 	if err := command.Run(context.Background(), os.Args); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		cliapp.PrintError(os.Stderr, err)
 		os.Exit(1)
 	}
 }

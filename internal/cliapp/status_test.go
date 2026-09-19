@@ -38,8 +38,8 @@ func TestPrintStatusesWrapsLongMirrorDetails(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		"DESTINATION  STATE      BROWSER  PROXY            SSH      MIRROR\n",
-		"reyna        connected  -        127.0.0.1:51747  healthy  enabled\n\n",
+		"DESTINATION  STATE\n",
+		"reyna        ● connected\n\n",
 		"MIRRORED:     ",
 		"\nEXCLUDED:     22, 53, 80, 443\n",
 		"\nCONFLICTS:    3000, 5173\n",
@@ -61,5 +61,30 @@ func TestPrintStatusesWrapsLongMirrorDetails(t *testing.T) {
 		if len(line) > wantLineWidth {
 			t.Fatalf("status line is %d characters, want at most %d: %q", len(line), wantLineWidth, line)
 		}
+	}
+}
+
+func TestPrintStatusesShowsBrowserAndProxyForBrowserSessions(t *testing.T) {
+	t.Parallel()
+
+	destination, err := session.ParseDestination("reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := session.SessionStatus{
+		Destination: destination,
+		State:       session.SessionConnected,
+		Browser:     "firefox",
+		Proxy:       netip.MustParseAddrPort("127.0.0.1:51747"),
+	}
+
+	var output bytes.Buffer
+	if err := printStatuses(&output, []session.SessionStatus{status}, false); err != nil {
+		t.Fatal(err)
+	}
+	want := "DESTINATION  STATE        BROWSER  PROXY\n" +
+		"reyna        ● connected  firefox  127.0.0.1:51747\n"
+	if got := output.String(); got != want {
+		t.Fatalf("status output = %q, want %q", got, want)
 	}
 }

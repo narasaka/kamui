@@ -251,6 +251,9 @@ func classifyConnectError(destination, stderr string, err error) error {
 		strings.Contains(folded, "hostname contains invalid characters") {
 		kind = ConfigurationFailure
 	}
+	if diagnostic := strings.TrimSpace(stderr); diagnostic != "" {
+		err = fmt.Errorf("%w\n%s", err, diagnostic)
+	}
 	return &ConnectError{Kind: kind, Destination: destination, Err: err}
 }
 

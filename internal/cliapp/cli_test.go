@@ -278,19 +278,22 @@ func TestPrimaryCommandMirrorsPortsWithoutLaunchingBrowser(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	application := kamuiapp.New(layout, nil)
-	var output bytes.Buffer
-	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+	var output, errorOutput bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &errorOutput})
 	if err := command.Run(context.Background(), []string{"kamui", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "mirroring enabled") || !strings.Contains(got, fmt.Sprint(mirroredPort)) || !strings.Contains(got, "excluded 80") || !strings.Contains(got, fmt.Sprint(conflictPort)) {
+	if got := errorOutput.String(); got != "" {
+		t.Fatalf("redirected connection progress = %q, want empty", got)
+	}
+	if got := output.String(); !strings.Contains(got, "● connected") || !strings.Contains(got, "MIRRORED:     "+fmt.Sprint(mirroredPort)) || !strings.Contains(got, "EXCLUDED:     80") || !strings.Contains(got, "CONFLICTS:    "+fmt.Sprint(conflictPort)) || !strings.HasSuffix(got, "\nTo disconnect, run: kamui stop reyna\n") {
 		t.Fatalf("mirror output = %q", got)
 	}
 	output.Reset()
 	if err := command.Run(context.Background(), []string{"kamui", "status", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "  enabled\n") || !strings.Contains(got, "MIRRORED:     "+fmt.Sprint(mirroredPort)) || !strings.Contains(got, "EXCLUDED:     80") || !strings.Contains(got, "CONFLICTS:    "+fmt.Sprint(conflictPort)) {
+	if got := output.String(); !strings.Contains(got, "reyna        ● connected\n") || !strings.Contains(got, "MIRRORED:     "+fmt.Sprint(mirroredPort)) || !strings.Contains(got, "EXCLUDED:     80") || !strings.Contains(got, "CONFLICTS:    "+fmt.Sprint(conflictPort)) {
 		t.Fatalf("status output = %q", got)
 	}
 	status, err := application.Execute(context.Background(), kamuiapp.Request{Operation: kamuiapp.Status, Destination: "reyna"})
@@ -347,7 +350,7 @@ func TestPrimaryCommandAppliesPortFlagsOverHostConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "mirrored "+fmt.Sprint(includePort)) || !strings.Contains(got, "excluded "+fmt.Sprint(excludePort)) {
+	if got := output.String(); !strings.Contains(got, "MIRRORED:     "+fmt.Sprint(includePort)) || !strings.Contains(got, "EXCLUDED:     "+fmt.Sprint(excludePort)) {
 		t.Fatalf("mirror output = %q", got)
 	}
 
@@ -418,16 +421,16 @@ func TestBrowserCommandRejectsInvalidLoopbackMode(t *testing.T) {
 	}
 }
 
-func TestStatusDistinguishesSessionStateFromSSHHealth(t *testing.T) {
+func TestStatusOmitsRedundantSSHAndMirrorColumns(t *testing.T) {
 	t.Parallel()
 
-	application, _, status := runningStatusApplication(t)
+	application, _, _ := runningStatusApplication(t)
 	var output bytes.Buffer
 	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
 	if err := command.Run(context.Background(), []string{"kamui", "status", "reyna"}); err != nil {
 		t.Fatal(err)
 	}
-	want := fmt.Sprintf("DESTINATION  STATE      BROWSER  PROXY            SSH      MIRROR\nreyna        connected  -        %s  healthy  disabled\n", status.Proxy)
+	want := "DESTINATION  STATE\nreyna        ● connected\n"
 	if got := output.String(); got != want {
 		t.Fatalf("status output = %q, want %q", got, want)
 	}
@@ -461,8 +464,9 @@ func TestVerboseStatusIncludesLastTunnelError(t *testing.T) {
 	got := output.String()
 	for _, want := range []string{
 		"DESTINATION  STATE",
-		"reyna        authentication-required",
+		"reyna        ✗ authentication-required",
 		"LAST ERROR:   SSH authentication failed for reyna:",
+		"Permission denied (publickey).",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("verbose status output = %q, want substring %q", got, want)

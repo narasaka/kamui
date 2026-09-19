@@ -156,6 +156,23 @@ func TestInteractiveTransportCopiesBootstrapDiagnosticsToTerminalAndLog(t *testi
 	}
 }
 
+func TestTransportIncludesBootstrapDiagnosticsInConnectionErrors(t *testing.T) {
+	t.Parallel()
+
+	const diagnostic = "To authenticate, visit: https://login.tailscale.com/a/example\n"
+	transport := ssh.Transport{
+		Launcher:         failingLauncher{diagnostic: diagnostic},
+		ReadinessTimeout: time.Second,
+	}
+	_, err := transport.Connect(context.Background(), "reyna")
+	if err == nil {
+		t.Fatal("Connect returned no error")
+	}
+	if got := err.Error(); !strings.Contains(got, strings.TrimSpace(diagnostic)) {
+		t.Fatalf("Connect error = %q, want bootstrap diagnostic", got)
+	}
+}
+
 func TestTransportRetriesWhenSOCKSPortLosesBindRace(t *testing.T) {
 	t.Parallel()
 
@@ -347,6 +364,15 @@ func (l *bindRaceLauncher) Start(request ssh.StartRequest) (ssh.Process, error) 
 
 type exitedProcess struct {
 	err error
+}
+
+type failingLauncher struct {
+	diagnostic string
+}
+
+func (l failingLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	_, _ = io.WriteString(request.Stderr, l.diagnostic)
+	return nil, errors.New("exit status 255")
 }
 
 func (p exitedProcess) Wait() error          { return p.err }

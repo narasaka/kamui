@@ -2,6 +2,7 @@
 package cliapp
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -41,6 +42,10 @@ func NewCommand(streams Streams) *cli.Command {
 
 // NewCommandWithApplication returns the command grammar wired to Kamui.
 func NewCommandWithApplication(application *kamuiapp.Application, streams Streams) *cli.Command {
+	progressWriter := streams.ErrOut
+	if progressWriter == nil {
+		progressWriter = streams.Out
+	}
 	command := &cli.Command{
 		Name:      "kamui",
 		Version:   version.Version,
@@ -64,15 +69,25 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			if application == nil {
 				return notImplemented("mirror")
 			}
+			progress := newConnectionProgress(progressWriter)
+			if err := progress.start(destination.String()); err != nil {
+				return err
+			}
 			result, err := application.Execute(ctx, kamuiapp.Request{
 				Operation: kamuiapp.Mirror, Destination: destination.String(),
 				IncludePorts: cmd.StringSlice("include-port"), ExcludePorts: cmd.StringSlice("exclude-port"),
 			})
+			clearErr := progress.stop()
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(streams.Out, "%s mirroring enabled; mirrored %s; excluded %s; conflicts %s\n",
-				destination, formatPorts(result.Session.Mirror.MirroredPorts), formatPorts(result.Session.Mirror.ExcludedPorts), formatConflicts(result.Session.Mirror.ConflictedPorts))
+			if clearErr != nil {
+				return clearErr
+			}
+			if err := printStatusesWithStyle(streams.Out, []session.SessionStatus{result.Session}, false, styleForWriter(streams.Out)); err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(streams.Out, "\nTo disconnect, run: kamui stop %s\n", shellWord(destination.String()))
 			return err
 		},
 	}
@@ -187,9 +202,9 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 					return err
 				}
 				if cmd.NArg() == 0 {
-					return printStatuses(streams.Out, result.Sessions, cmd.Bool("verbose"))
+					return printStatusesWithStyle(streams.Out, result.Sessions, cmd.Bool("verbose"), styleForWriter(streams.Out))
 				}
-				return printStatuses(streams.Out, []session.SessionStatus{result.Session}, cmd.Bool("verbose"))
+				return printStatusesWithStyle(streams.Out, []session.SessionStatus{result.Session}, cmd.Bool("verbose"), styleForWriter(streams.Out))
 			},
 		},
 		{
@@ -352,25 +367,45 @@ func mirrorPortFlags() []cli.Flag {
 }
 
 func printStatuses(writer io.Writer, statuses []session.SessionStatus, verbose bool) error {
-	table := tabwriter.NewWriter(writer, 0, 4, 2, ' ', 0)
-	if _, err := fmt.Fprintln(table, "DESTINATION\tSTATE\tBROWSER\tPROXY\tSSH\tMIRROR"); err != nil {
+	return printStatusesWithStyle(writer, statuses, verbose, terminalStyle{})
+}
+
+func printStatusesWithStyle(writer io.Writer, statuses []session.SessionStatus, verbose bool, style terminalStyle) error {
+	var summary bytes.Buffer
+	table := tabwriter.NewWriter(&summary, 0, 4, 2, ' ', 0)
+	showBrowser := false
+	for _, status := range statuses {
+		if status.Browser != "" {
+			showBrowser = true
+			break
+		}
+	}
+	header := "DESTINATION\tSTATE"
+	if showBrowser {
+		header = "DESTINATION\tSTATE\tBROWSER\tPROXY"
+	}
+	if _, err := fmt.Fprintln(table, header); err != nil {
 		return err
 	}
 	for _, status := range statuses {
-		mirrorState := "disabled"
-		if status.Mirror.Enabled {
-			mirrorState = "enabled"
-		}
 		browser := status.Browser
 		if browser == "" {
 			browser = "-"
 		}
-		if _, err := fmt.Fprintf(table, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			status.Destination, sessionState(status.State), browser, status.Proxy, sshState(status.State), mirrorState); err != nil {
+		if showBrowser {
+			if _, err := fmt.Fprintf(table, "%s\t%s\t%s\t%s\n",
+				status.Destination, displayedSessionState(status.State), browser, status.Proxy); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintf(table, "%s\t%s\n",
+			status.Destination, displayedSessionState(status.State)); err != nil {
 			return err
 		}
 	}
 	if err := table.Flush(); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(writer, style.statusSummary(summary.String())); err != nil {
 		return err
 	}
 
@@ -502,13 +537,6 @@ func formatConflicts(conflicts []mirror.Conflict) string {
 	return strings.Join(conflictValues(conflicts), ",")
 }
 
-func sshState(state session.SessionState) string {
-	if state == session.SessionConnected {
-		return "healthy"
-	}
-	return sessionState(state)
-}
-
 func sessionState(state session.SessionState) string {
 	switch state {
 	case session.SessionConnected:
@@ -519,6 +547,19 @@ func sessionState(state session.SessionState) string {
 		return "authentication-required"
 	default:
 		return "unavailable"
+	}
+}
+
+func displayedSessionState(state session.SessionState) string {
+	switch state {
+	case session.SessionConnected:
+		return "● connected"
+	case session.SessionConnecting:
+		return "○ connecting"
+	case session.SessionAuthenticationRequired:
+		return "✗ authentication-required"
+	default:
+		return "✗ unavailable"
 	}
 }
 
@@ -545,4 +586,12 @@ func noArguments(cmd *cli.Command) error {
 
 func notImplemented(operation string) error {
 	return fmt.Errorf("%s is not implemented", operation)
+}
+
+func shellWord(value string) string {
+	const safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_@%+=:,./-"
+	if strings.Trim(value, safe) == "" {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
 }
