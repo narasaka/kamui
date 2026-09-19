@@ -1,9 +1,11 @@
 package mirror
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os/exec"
 	"sort"
 	"strconv"
@@ -12,7 +14,7 @@ import (
 
 // CommandRunner is the external-process seam used by SSHDiscoverer.
 type CommandRunner interface {
-	CombinedOutput(context.Context, string, ...string) ([]byte, error)
+	Run(context.Context, string, io.Writer, io.Writer, ...string) error
 }
 
 // SSHDiscoverer discovers listeners with tools already present on the remote
@@ -21,6 +23,13 @@ type CommandRunner interface {
 type SSHDiscoverer struct {
 	SSHPath string
 	Runner  CommandRunner
+	Stderr  io.Writer
+}
+
+// WithDiagnostics returns a discoverer that copies SSH stderr to writer.
+func (d SSHDiscoverer) WithDiagnostics(writer io.Writer) Discoverer {
+	d.Stderr = writer
+	return d
 }
 
 const remoteListenerDiscovery = `if command -v ss >/dev/null 2>&1; then
@@ -62,14 +71,20 @@ func (d SSHDiscoverer) ListeningPorts(ctx context.Context, destination string) (
 		"-T", "-o", "BatchMode=yes", "-o", "PermitLocalCommand=no",
 		"--", destination, "sh", "-c", "'" + remoteListenerDiscovery + "'",
 	}
-	output, err := runner.CombinedOutput(ctx, path, arguments...)
-	format, body := splitDiscoveryOutput(string(output))
+	var stdout, stderr bytes.Buffer
+	diagnosticStderr := io.Writer(&stderr)
+	if d.Stderr != nil {
+		diagnosticStderr = io.MultiWriter(&stderr, d.Stderr)
+	}
+	err := runner.Run(ctx, path, &stdout, diagnosticStderr, arguments...)
+	output := stdout.String()
+	format, body := splitDiscoveryOutput(output)
 	var status interface{ ExitCode() int }
 	if err != nil && errors.As(err, &status) && status.ExitCode() == 1 && format == "lsof" && strings.TrimSpace(body) == "" {
 		return []uint16{}, nil
 	}
 	if err != nil {
-		detail := strings.TrimSpace(string(output))
+		detail := strings.TrimSpace(strings.Join([]string{output, stderr.String()}, "\n"))
 		if len(detail) > 240 {
 			detail = detail[:240] + "..."
 		}
@@ -201,6 +216,9 @@ func portFromAddress(address string, separatorByte byte) (uint16, error) {
 
 type execCommandRunner struct{}
 
-func (execCommandRunner) CombinedOutput(ctx context.Context, path string, args ...string) ([]byte, error) {
-	return exec.CommandContext(ctx, path, args...).CombinedOutput()
+func (execCommandRunner) Run(ctx context.Context, path string, stdout, stderr io.Writer, args ...string) error {
+	command := exec.CommandContext(ctx, path, args...)
+	command.Stdout = stdout
+	command.Stderr = stderr
+	return command.Run()
 }

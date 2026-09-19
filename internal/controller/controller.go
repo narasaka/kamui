@@ -29,7 +29,7 @@ import (
 const maximumMessageSize = 1 << 20
 
 // ProtocolVersion changes when the controller wire contract is incompatible.
-const ProtocolVersion = 3
+const ProtocolVersion = 4
 
 // Identity is the authenticated protocol/build identity of one controller.
 type Identity struct {
@@ -41,7 +41,8 @@ type Identity struct {
 
 // Client sends lifecycle commands to a running controller.
 type Client struct {
-	Layout state.Layout
+	Layout      state.Layout
+	Diagnostics io.Writer
 }
 
 // Identity authenticates the resident controller and reports its protocol and
@@ -174,14 +175,25 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 	if err := json.NewEncoder(connection).Encode(request); err != nil {
 		return session.Result{}, fmt.Errorf("send controller command: %w", err)
 	}
-	var response wireResponse
-	if err := json.NewDecoder(io.LimitReader(connection, maximumMessageSize)).Decode(&response); err != nil {
-		return session.Result{}, fmt.Errorf("read controller response: %w", err)
+	decoder := json.NewDecoder(io.LimitReader(connection, maximumMessageSize))
+	for {
+		var response wireResponse
+		if err := decoder.Decode(&response); err != nil {
+			return session.Result{}, fmt.Errorf("read controller response: %w", err)
+		}
+		if response.Diagnostic != "" {
+			if c.Diagnostics != nil {
+				if _, err := io.WriteString(c.Diagnostics, response.Diagnostic); err != nil {
+					return session.Result{}, fmt.Errorf("write controller diagnostic: %w", err)
+				}
+			}
+			continue
+		}
+		if response.Error != "" {
+			return session.Result{}, errors.New(response.Error)
+		}
+		return response.Result.sessionResult()
 	}
-	if response.Error != "" {
-		return session.Result{}, errors.New(response.Error)
-	}
-	return response.Result.sessionResult()
 }
 
 // Server is one controller listener holding the advisory controller lock.
@@ -278,25 +290,26 @@ func (s *Server) accept() {
 }
 
 func (s *Server) handle(connection net.Conn) {
+	responses := &responseWriter{encoder: json.NewEncoder(connection)}
 	var request wireRequest
 	if err := json.NewDecoder(io.LimitReader(connection, maximumMessageSize)).Decode(&request); err != nil {
-		_ = json.NewEncoder(connection).Encode(wireResponse{Error: "malformed controller request"})
+		_ = responses.Encode(wireResponse{Error: "malformed controller request"})
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(request.Token), []byte(s.token)) != 1 {
-		_ = json.NewEncoder(connection).Encode(wireResponse{Error: "controller authentication failed"})
+		_ = responses.Encode(wireResponse{Error: "controller authentication failed"})
 		return
 	}
 	if request.Probe {
-		_ = json.NewEncoder(connection).Encode(wireResponse{Identity: &s.identity})
+		_ = responses.Encode(wireResponse{Identity: &s.identity})
 		return
 	}
 	if request.Shutdown {
 		if request.ExpectedProtocol != s.identity.Protocol || request.ExpectedBuild != s.identity.Build {
-			_ = json.NewEncoder(connection).Encode(wireResponse{Error: "controller identity changed before shutdown"})
+			_ = responses.Encode(wireResponse{Error: "controller identity changed before shutdown"})
 			return
 		}
-		_ = json.NewEncoder(connection).Encode(wireResponse{})
+		_ = responses.Encode(wireResponse{})
 		go func() { _ = s.Close() }()
 		return
 	}
@@ -305,11 +318,11 @@ func (s *Server) handle(connection net.Conn) {
 	if request.Destination != "" {
 		destination, err = session.ParseDestination(request.Destination)
 		if err != nil {
-			_ = json.NewEncoder(connection).Encode(wireResponse{Error: err.Error()})
+			_ = responses.Encode(wireResponse{Error: err.Error()})
 			return
 		}
 	} else if request.Operation != session.Status && request.Operation != session.StopAll {
-		_ = json.NewEncoder(connection).Encode(wireResponse{Error: "SSH destination is required"})
+		_ = responses.Encode(wireResponse{Error: "SSH destination is required"})
 		return
 	}
 	command := session.Command{
@@ -320,22 +333,45 @@ func (s *Server) handle(connection net.Conn) {
 		LoopbackMode:      request.LoopbackMode,
 		Unattended:        request.Unattended,
 		EnableMirror:      request.EnableMirror,
+		Diagnostics:       responses,
 	}
 	if request.PortPolicy != nil {
 		policy := mirror.NewPortPolicy(request.PortPolicy.ExcludedRanges)
 		command.PortPolicy = &policy
 	}
 	if request.Async {
-		_ = json.NewEncoder(connection).Encode(wireResponse{})
+		command.Diagnostics = nil
+		_ = responses.Encode(wireResponse{})
 		go func() { _, _ = s.manager.Execute(s.ctx, command) }()
 		return
 	}
 	result, err := s.manager.Execute(s.ctx, command)
 	if err != nil {
-		_ = json.NewEncoder(connection).Encode(wireResponse{Error: err.Error()})
+		_ = responses.Encode(wireResponse{Error: err.Error()})
 		return
 	}
-	_ = json.NewEncoder(connection).Encode(wireResponse{Result: makeWireResult(result)})
+	_ = responses.Encode(wireResponse{Result: makeWireResult(result)})
+}
+
+type responseWriter struct {
+	mu      sync.Mutex
+	encoder *json.Encoder
+}
+
+func (w *responseWriter) Encode(response wireResponse) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.encoder.Encode(response)
+}
+
+func (w *responseWriter) Write(value []byte) (int, error) {
+	if len(value) == 0 {
+		return 0, nil
+	}
+	if err := w.Encode(wireResponse{Diagnostic: string(value)}); err != nil {
+		return 0, err
+	}
+	return len(value), nil
 }
 
 // Close stops the listener and releases the controller lock.
@@ -441,9 +477,10 @@ type wireResult struct {
 }
 
 type wireResponse struct {
-	Result   wireResult `json:"result"`
-	Identity *Identity  `json:"identity,omitempty"`
-	Error    string     `json:"error,omitempty"`
+	Result     wireResult `json:"result"`
+	Identity   *Identity  `json:"identity,omitempty"`
+	Diagnostic string     `json:"diagnostic,omitempty"`
+	Error      string     `json:"error,omitempty"`
 }
 
 func makeWireResult(result session.Result) wireResult {

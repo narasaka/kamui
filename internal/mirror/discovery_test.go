@@ -1,17 +1,55 @@
 package mirror_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/narasaka/kamui/internal/mirror"
 )
+
+func TestSSHDiscovererStreamsAuthenticationDiagnosticsBeforeExit(t *testing.T) {
+	t.Parallel()
+
+	const diagnostic = "# Tailscale SSH requires an additional check.\n# To authenticate, visit: https://login.tailscale.com/a/example\n"
+	runner := &blockingDiagnosticRunner{
+		diagnostic: diagnostic,
+		written:    make(chan struct{}),
+		release:    make(chan struct{}),
+	}
+	var diagnostics bytes.Buffer
+	discoverer := mirror.SSHDiscoverer{
+		SSHPath: "/usr/bin/ssh",
+		Runner:  runner,
+		Stderr:  &diagnostics,
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := discoverer.ListeningPorts(context.Background(), "reyna")
+		done <- err
+	}()
+
+	select {
+	case <-runner.written:
+	case <-time.After(time.Second):
+		t.Fatal("fake SSH process did not write its authentication diagnostic")
+	}
+	if got := diagnostics.String(); got != diagnostic {
+		t.Fatalf("streamed diagnostics = %q, want %q before SSH exits", got, diagnostic)
+	}
+	close(runner.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+}
 
 func TestSSHDiscovererParsesAndSortsSSListeningPorts(t *testing.T) {
 	t.Parallel()
@@ -141,13 +179,30 @@ type recordingRunner struct {
 	args   []string
 }
 
+type blockingDiagnosticRunner struct {
+	diagnostic string
+	written    chan struct{}
+	release    chan struct{}
+}
+
+func (r *blockingDiagnosticRunner) Run(_ context.Context, _ string, stdout, stderr io.Writer, _ ...string) error {
+	if _, err := io.WriteString(stderr, r.diagnostic); err != nil {
+		return err
+	}
+	close(r.written)
+	<-r.release
+	_, err := io.WriteString(stdout, "kamui:ss\n")
+	return err
+}
+
 type exitStatus int
 
 func (status exitStatus) Error() string { return "exit status " + fmt.Sprint(int(status)) }
 func (status exitStatus) ExitCode() int { return int(status) }
 
-func (r *recordingRunner) CombinedOutput(_ context.Context, path string, args ...string) ([]byte, error) {
+func (r *recordingRunner) Run(_ context.Context, path string, stdout, _ io.Writer, args ...string) error {
 	r.path = path
 	r.args = append([]string(nil), args...)
-	return r.output, r.err
+	_, _ = stdout.Write(r.output)
+	return r.err
 }

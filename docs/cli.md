@@ -40,9 +40,11 @@ command failures in red; redirected output has no progress message or ANSI
 color codes.
 The successful primary command ends with the exact `kamui stop SSH_DESTINATION`
 command needed to disconnect the session.
-OpenSSH bootstrap diagnostics are included in a failed connection error as well
-as the OpenSSH log, so authentication instructions remain visible to the
-calling terminal.
+The controller relays OpenSSH diagnostics from the initial tunnel connection
+and listener-discovery command to the calling terminal as they arrive. This
+keeps authentication instructions and URLs visible while OpenSSH waits for the
+user. Tunnel bootstrap diagnostics also remain in the OpenSSH log and are
+included in a failed connection error.
 
 Running `kamui` without arguments prints command help and exits successfully.
 `kamui -v` and `kamui --version` print only the build version, such as `v0.0.1`
