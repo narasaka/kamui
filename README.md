@@ -61,6 +61,23 @@ ssh \
   foo
 ```
 
+I later moved the forwards into `~/.ssh/config`, where the list kept growing:
+
+```sshconfig
+Host foo
+	ForwardAgent yes
+	User narasaka
+	ExitOnForwardFailure no
+	LogLevel QUIET
+	LocalForward 3000 localhost:3000
+	LocalForward 3001 localhost:3001
+	LocalForward 3002 localhost:3002
+	LocalForward 3003 localhost:3003
+	LocalForward 4096 localhost:4096
+	LocalForward 5173 localhost:5173
+	LocalForward 5432 localhost:5432
+```
+
 That worked until a repository opened another port. I had to notice the new
 port, edit the command or SSH configuration, and reconnect. A monorepo could
 use several ports at once, and browser code could refer to a port that I had
