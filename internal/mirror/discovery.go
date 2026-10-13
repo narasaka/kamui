@@ -95,8 +95,9 @@ func (d SSHDiscoverer) ListeningPorts(ctx context.Context, destination string) (
 // remoteListenerWatch repeats discovery every second on the remote host. After
 // the tool marker it writes one line per pass: a full snapshot when listeners
 // changed, kamui:same when they did not, or kamui:error with the tool's exit
-// status. The script contains no single quotes because it is quoted for the
-// remote login shell.
+// status. Only lsof uses status 1 with no output to mean no listeners. The
+// script contains no single quotes because it is quoted for the remote login
+// shell.
 const remoteListenerWatch = `if command -v ss >/dev/null 2>&1; then
   tool=ss
   list() { ss -H -ltn; }
@@ -108,10 +109,10 @@ elif [ -x /usr/sbin/lsof ]; then
   list() { /usr/sbin/lsof -nP -iTCP -sTCP:LISTEN -Fn; }
 elif command -v netstat >/dev/null 2>&1; then
   tool=netstat
-  list() { netstat -an | grep -i listen; }
+  list() { out=$(netstat -an) || return; printf "%s\n" "$out" | grep -i listen || :; }
 elif [ -x /usr/sbin/netstat ]; then
   tool=netstat
-  list() { /usr/sbin/netstat -an | grep -i listen; }
+  list() { out=$(/usr/sbin/netstat -an) || return; printf "%s\n" "$out" | grep -i listen || :; }
 else
   printf "Kamui requires ss, lsof, or netstat for TCP listener discovery\n" >&2
   exit 127
@@ -121,7 +122,7 @@ previous=
 reported=no
 while :; do
   if current=$(list); then status=0; else status=$?; fi
-  if [ "$status" -ne 0 ] && ! { [ "$tool" != ss ] && [ "$status" -eq 1 ] && [ -z "$current" ]; }; then
+  if [ "$status" -ne 0 ] && ! { [ "$tool" = lsof ] && [ "$status" -eq 1 ] && [ -z "$current" ]; }; then
     printf "kamui:error %s\n" "$status"
     reported=no
   elif [ "$reported" = yes ] && [ "$current" = "$previous" ]; then

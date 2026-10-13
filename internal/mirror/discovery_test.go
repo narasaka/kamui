@@ -340,6 +340,65 @@ func TestRemoteListenerWatchScriptReportsLocalListenerChanges(t *testing.T) {
 	waitForReport(false)
 }
 
+// This test is not parallel for the same reason as the local listener test.
+func TestRemoteListenerWatchScriptToolStatuses(t *testing.T) {
+	for _, path := range []string{"/usr/sbin/lsof", "/usr/sbin/netstat"} {
+		if _, err := os.Stat(path); err == nil {
+			t.Skipf("%s would shadow the fake discovery tools", path)
+		}
+	}
+	for name, test := range map[string]struct {
+		tool, script string
+		ports        []uint16
+		err          string
+	}{
+		"lsof without listeners":    {tool: "lsof", script: "exit 1", ports: []uint16{}},
+		"lsof failure":              {tool: "lsof", script: "echo lsof broke >&2; exit 2", err: "remote lsof exited with status 2"},
+		"netstat listeners":         {tool: "netstat", script: "echo \"tcp 0 0 127.0.0.1:3001 0.0.0.0:* LISTEN\"; echo \"tcp 0 0 127.0.0.1:3001 127.0.0.1:5000 ESTABLISHED\"", ports: []uint16{3001}},
+		"netstat without listeners": {tool: "netstat", script: "echo \"tcp 0 0 127.0.0.1:3001 127.0.0.1:5000 ESTABLISHED\"", ports: []uint16{}},
+		"netstat failure":           {tool: "netstat", script: "exit 1", err: "remote netstat exited with status 1"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			bin := t.TempDir()
+			for _, command := range []string{"sh", "grep", "sleep"} {
+				target, err := exec.LookPath(command)
+				if err != nil {
+					t.Skipf("%s is unavailable", command)
+				}
+				if err := os.Symlink(target, filepath.Join(bin, command)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(bin, test.tool), []byte("#!/bin/sh\n"+test.script+"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var ports []uint16
+			var reportErr error
+			reported := false
+			_ = (mirror.SSHDiscoverer{SSHPath: "ssh", Runner: remoteShellRunner{path: bin}}).WatchListeningPorts(ctx, "localhost", func(got []uint16, err error) {
+				if !reported {
+					ports, reportErr, reported = got, err, true
+				}
+				cancel()
+			})
+			if !reported {
+				t.Fatal("watch script made no report")
+			}
+			if test.err != "" {
+				if reportErr == nil || !strings.Contains(reportErr.Error(), test.err) {
+					t.Fatalf("report error = %v, want %q", reportErr, test.err)
+				}
+				return
+			}
+			if reportErr != nil || !reflect.DeepEqual(ports, test.ports) {
+				t.Fatalf("report = %v, %v; want %v", ports, reportErr, test.ports)
+			}
+		})
+	}
+}
+
 func TestRemoteListenerWatchScriptHasNoSingleQuotes(t *testing.T) {
 	t.Parallel()
 
@@ -352,12 +411,15 @@ func TestRemoteListenerWatchScriptHasNoSingleQuotes(t *testing.T) {
 }
 
 // remoteShellRunner runs the remote command through a local shell the way an
-// SSH server passes it to the login shell.
-type remoteShellRunner struct{}
+// SSH server passes it to the login shell. A non-empty path replaces PATH.
+type remoteShellRunner struct{ path string }
 
-func (remoteShellRunner) Run(ctx context.Context, _ string, stdout, stderr io.Writer, args ...string) error {
+func (r remoteShellRunner) Run(ctx context.Context, _ string, stdout, stderr io.Writer, args ...string) error {
 	separator := slices.Index(args, "--")
 	command := exec.CommandContext(ctx, "/bin/sh", "-c", strings.Join(args[separator+2:], " "))
+	if r.path != "" {
+		command.Env = append(os.Environ(), "PATH="+r.path)
+	}
 	command.Stdout = stdout
 	command.Stderr = stderr
 	// The nested remote shell can outlive the killed outer shell; closing the
