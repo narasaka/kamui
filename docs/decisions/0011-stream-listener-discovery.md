@@ -36,7 +36,8 @@ stream are still polled on the reconciliation interval.
 A session authenticates once for discovery instead of once per poll, and new
 remote listeners usually appear within about a second. The remote host needs no
 additional software; the loop uses only POSIX shell features and `sleep 1`.
-When OpenSSH exits, the remote shell ends at its next write to the closed
-channel. Initial OpenSSH diagnostics still reach the invoking terminal until
-the first report. A canceled discovery command may hold its output pipes for
-at most two seconds before Kamui stops waiting for it.
+When OpenSSH exits, the remote shell exits at its next failed write to the
+closed channel, even if it started with SIGPIPE ignored. Initial OpenSSH
+diagnostics still reach the invoking terminal until the first report. A
+canceled discovery command may hold its output pipes for at most two seconds
+before Kamui stops waiting for it.

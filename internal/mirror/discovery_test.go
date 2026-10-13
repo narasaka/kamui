@@ -1,6 +1,7 @@
 package mirror_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
@@ -349,6 +350,7 @@ func TestRemoteListenerWatchScriptToolStatuses(t *testing.T) {
 	}
 	for name, test := range map[string]struct {
 		tool, script string
+		brokenGrep   bool
 		ports        []uint16
 		err          string
 	}{
@@ -357,6 +359,7 @@ func TestRemoteListenerWatchScriptToolStatuses(t *testing.T) {
 		"netstat listeners":         {tool: "netstat", script: "echo \"tcp 0 0 127.0.0.1:3001 0.0.0.0:* LISTEN\"; echo \"tcp 0 0 127.0.0.1:3001 127.0.0.1:5000 ESTABLISHED\"", ports: []uint16{3001}},
 		"netstat without listeners": {tool: "netstat", script: "echo \"tcp 0 0 127.0.0.1:3001 127.0.0.1:5000 ESTABLISHED\"", ports: []uint16{}},
 		"netstat failure":           {tool: "netstat", script: "exit 1", err: "remote netstat exited with status 1"},
+		"grep failure":              {tool: "netstat", script: "echo \"tcp 0 0 127.0.0.1:3001 0.0.0.0:* LISTEN\"", brokenGrep: true, err: "remote netstat exited with status 2"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			bin := t.TempDir()
@@ -371,6 +374,12 @@ func TestRemoteListenerWatchScriptToolStatuses(t *testing.T) {
 			}
 			if err := os.WriteFile(filepath.Join(bin, test.tool), []byte("#!/bin/sh\n"+test.script+"\n"), 0o700); err != nil {
 				t.Fatal(err)
+			}
+			if test.brokenGrep {
+				_ = os.Remove(filepath.Join(bin, "grep"))
+				if err := os.WriteFile(filepath.Join(bin, "grep"), []byte("#!/bin/sh\nexit 2\n"), 0o700); err != nil {
+					t.Fatal(err)
+				}
 			}
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
@@ -396,6 +405,35 @@ func TestRemoteListenerWatchScriptToolStatuses(t *testing.T) {
 				t.Fatalf("report = %v, %v; want %v", ports, reportErr, test.ports)
 			}
 		})
+	}
+}
+
+// This test is not parallel for the same reason as the local listener test.
+func TestRemoteListenerWatchScriptExitsAfterChannelCloseWithSIGPIPEIgnored(t *testing.T) {
+	runner := &recordingRunner{}
+	_ = (mirror.SSHDiscoverer{Runner: runner}).WatchListeningPorts(context.Background(), "reyna", func([]uint16, error) {})
+	command := exec.Command("/bin/sh", "-c", "trap \"\" PIPE; sh -c "+runner.args[len(runner.args)-1])
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bufio.NewReader(stdout).ReadString('\n'); err != nil {
+		t.Fatal(err)
+	}
+	_ = stdout.Close()
+	exited := make(chan struct{})
+	go func() {
+		_ = command.Wait()
+		close(exited)
+	}()
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		_ = command.Process.Kill()
+		t.Fatal("remote watch loop kept running after its output channel closed")
 	}
 }
 
