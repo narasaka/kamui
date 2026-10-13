@@ -14,6 +14,7 @@ import (
 	"os/user"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -114,6 +115,66 @@ func TestRemoteListenerDiscoveryWithDisposableOpenSSHServer(t *testing.T) {
 		}
 	}
 	t.Fatalf("remote listening ports %v omit test listener %d", ports, want)
+}
+
+func TestRemoteListenerWatchWithDisposableOpenSSHServer(t *testing.T) {
+	fixture := startDisposableOpenSSH(t)
+	clientConfig := filepath.Join(fixture.root, "watch_ssh_config")
+	configuration := fmt.Sprintf(`Host kamui-watch-alias
+    HostName 127.0.0.1
+    User %s
+    Port %d
+    IdentityFile %s
+    IdentitiesOnly yes
+    UserKnownHostsFile %s
+    StrictHostKeyChecking no
+`, fixture.username, fixture.port, fixture.clientKey, filepath.Join(fixture.root, "known_hosts"))
+	if err := os.WriteFile(clientConfig, []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	wrapper := writeSSHWrapper(t, fixture.root, clientConfig)
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := uint16(listener.Addr().(*net.TCPAddr).Port)
+	reports := make(chan []uint16, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- (mirror.SSHDiscoverer{SSHPath: wrapper}).WatchListeningPorts(ctx, "kamui-watch-alias", func(ports []uint16, err error) {
+			if err == nil {
+				select {
+				case reports <- ports:
+				default:
+				}
+			}
+		})
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	waitForListener := func(present bool) {
+		t.Helper()
+		deadline := time.After(15 * time.Second)
+		for {
+			select {
+			case ports := <-reports:
+				if slices.Contains(ports, want) == present {
+					return
+				}
+			case err := <-done:
+				t.Fatalf("listener watch ended: %v", err)
+			case <-deadline:
+				t.Fatalf("remote listener watch never reported %d present=%v", want, present)
+			}
+		}
+	}
+	waitForListener(true)
+	_ = listener.Close()
+	waitForListener(false)
 }
 
 func TestOpenSSHHookSupportsConcurrentMultiplexedLoginsAndFailedAuthentication(t *testing.T) {

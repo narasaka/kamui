@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -174,6 +177,7 @@ func TestSSHDiscovererFindsOpenSSHOnPath(t *testing.T) {
 
 type recordingRunner struct {
 	output []byte
+	stderr string
 	err    error
 	path   string
 	args   []string
@@ -200,9 +204,164 @@ type exitStatus int
 func (status exitStatus) Error() string { return "exit status " + fmt.Sprint(int(status)) }
 func (status exitStatus) ExitCode() int { return int(status) }
 
-func (r *recordingRunner) Run(_ context.Context, path string, stdout, _ io.Writer, args ...string) error {
+func (r *recordingRunner) Run(_ context.Context, path string, stdout, stderr io.Writer, args ...string) error {
 	r.path = path
 	r.args = append([]string(nil), args...)
 	_, _ = stdout.Write(r.output)
+	_, _ = io.WriteString(stderr, r.stderr)
 	return r.err
+}
+
+func TestSSHDiscovererWatchStreamsListenerReports(t *testing.T) {
+	t.Parallel()
+
+	runner := &recordingRunner{output: []byte(strings.Join([]string{
+		"Welcome to reyna",
+		"kamui:ss",
+		"kamui:snapshot",
+		"LISTEN 0 4096 127.0.0.1:3001 0.0.0.0:*",
+		"LISTEN 0 128 [::]:3000 [::]:*",
+		"kamui:end",
+		"kamui:same",
+		"kamui:error 2",
+		"kamui:snapshot",
+		"",
+		"kamui:end",
+		"kamui:snapshot",
+		"not ss output",
+		"kamui:end",
+		"kamui:same",
+	}, "\n") + "\n")}
+	type listenerReport struct {
+		ports []uint16
+		err   string
+	}
+	var reports []listenerReport
+	err := (mirror.SSHDiscoverer{SSHPath: "/usr/bin/ssh", Runner: runner}).WatchListeningPorts(context.Background(), "reyna", func(ports []uint16, err error) {
+		report := listenerReport{ports: ports}
+		if err != nil {
+			report.err = err.Error()
+		}
+		reports = append(reports, report)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := runner.args[:9]; !reflect.DeepEqual(got, []string{
+		"-T", "-o", "BatchMode=yes", "-o", "PermitLocalCommand=no", "--", "reyna", "sh", "-c",
+	}) {
+		t.Fatalf("SSH argument prefix = %v", got)
+	}
+	if len(reports) != 6 {
+		t.Fatalf("reports = %#v, want 6", reports)
+	}
+	for index, want := range []listenerReport{
+		{ports: []uint16{3000, 3001}},
+		{ports: []uint16{3000, 3001}},
+		{err: "remote ss exited with status 2"},
+		{ports: []uint16{}},
+	} {
+		if !reflect.DeepEqual(reports[index], want) {
+			t.Fatalf("report %d = %#v, want %#v", index, reports[index], want)
+		}
+	}
+	for _, report := range reports[4:] {
+		if !strings.Contains(report.err, "parse remote ss output") {
+			t.Fatalf("malformed snapshot report = %#v, want parse error repeated while unchanged", report)
+		}
+	}
+}
+
+func TestSSHDiscovererWatchReportsSSHFailureDetail(t *testing.T) {
+	t.Parallel()
+
+	runner := &recordingRunner{output: []byte("kamui:ss\n"), err: exitStatus(255)}
+	runner.stderr = "Connection to reyna closed by remote host.\n"
+	err := (mirror.SSHDiscoverer{Runner: runner}).WatchListeningPorts(context.Background(), "reyna", func([]uint16, error) {})
+	if err == nil || !strings.Contains(err.Error(), "exit status 255") || !strings.Contains(err.Error(), "closed by remote host") {
+		t.Fatalf("error = %v, want SSH exit status and stderr detail", err)
+	}
+}
+
+// This test is not parallel: a child forked while another test closes a
+// listener briefly inherits that socket and makes immediate rebinding fail.
+func TestRemoteListenerWatchScriptReportsLocalListenerChanges(t *testing.T) {
+	tool := ""
+	for _, candidate := range []string{"ss", "lsof", "netstat"} {
+		if _, err := exec.LookPath(candidate); err == nil {
+			tool = candidate
+			break
+		}
+	}
+	if tool == "" {
+		t.Skip("ss, lsof, and netstat are unavailable")
+	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(listener.Addr().(*net.TCPAddr).Port)
+	reports := make(chan []uint16, 16)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- (mirror.SSHDiscoverer{SSHPath: "ssh", Runner: remoteShellRunner{}}).WatchListeningPorts(ctx, "localhost", func(ports []uint16, err error) {
+			if err != nil {
+				t.Errorf("%s report error: %v", tool, err)
+				return
+			}
+			select {
+			case reports <- ports:
+			default:
+			}
+		})
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	waitForReport := func(want bool) {
+		t.Helper()
+		deadline := time.After(10 * time.Second)
+		for {
+			select {
+			case ports := <-reports:
+				if slices.Contains(ports, port) == want {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("%s watch never reported listener %d present=%v", tool, port, want)
+			}
+		}
+	}
+	waitForReport(true)
+	_ = listener.Close()
+	waitForReport(false)
+}
+
+func TestRemoteListenerWatchScriptHasNoSingleQuotes(t *testing.T) {
+	t.Parallel()
+
+	runner := &recordingRunner{}
+	_ = (mirror.SSHDiscoverer{Runner: runner}).WatchListeningPorts(context.Background(), "reyna", func([]uint16, error) {})
+	script := runner.args[len(runner.args)-1]
+	if inner := strings.TrimSuffix(strings.TrimPrefix(script, "'"), "'"); strings.Contains(inner, "'") {
+		t.Fatal("watch script contains a single quote that would end the remote shell quoting")
+	}
+}
+
+// remoteShellRunner runs the remote command through a local shell the way an
+// SSH server passes it to the login shell.
+type remoteShellRunner struct{}
+
+func (remoteShellRunner) Run(ctx context.Context, _ string, stdout, stderr io.Writer, args ...string) error {
+	separator := slices.Index(args, "--")
+	command := exec.CommandContext(ctx, "/bin/sh", "-c", strings.Join(args[separator+2:], " "))
+	command.Stdout = stdout
+	command.Stderr = stderr
+	// The nested remote shell can outlive the killed outer shell; closing the
+	// pipes ends its loop at the next write as a closed SSH channel would.
+	command.WaitDelay = time.Second
+	return command.Run()
 }

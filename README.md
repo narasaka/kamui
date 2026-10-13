@@ -244,8 +244,9 @@ See [the CLI contract](docs/cli.md) and
 
 ## How TCP mirroring works
 
-Kamui discovers listening remote TCP ports every five seconds. It excludes
-ports 1 through 1023 by default. For each eligible port, it creates same-numbered
+Kamui keeps one discovery command open over OpenSSH. It checks listening remote
+TCP ports every second and applies changes as they appear. It excludes ports 1
+through 1023 by default. For each eligible port, it creates same-numbered
 listeners on local `127.0.0.1` and `::1`. It carries accepted connections
 through its OpenSSH transport to the same port on the remote loopback interface.
 It tries remote IPv4 first and remote IPv6 second.
@@ -262,8 +263,9 @@ has claimed a port receives `address already in use`.
 replace that policy for the active session without restarting its SSH transport.
 
 Discovery uses `ss`, `lsof`, or `netstat` on the remote host. A discovery error
-appears in `kamui status` and does not close current listeners. Kamui limits
-each discovery command to ten seconds and cancels it when the session stops.
+appears in `kamui status` and does not close current listeners. If the
+discovery command exits or stays silent for ten seconds, Kamui restarts it after
+five seconds. Kamui stops it when the session stops.
 
 Mirroring uses unprivileged loopback TCP listeners. It does not change browser
 proxy settings, the system HTTP proxy, packet-filter rules, or Network

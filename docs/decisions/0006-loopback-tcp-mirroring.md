@@ -1,6 +1,6 @@
 # ADR 0006: Reconcile real dual-stack loopback TCP listeners
 
-- Status: superseded in part by ADR 0008 and ADR 0009
+- Status: superseded in part by ADR 0008, ADR 0009, and ADR 0011
 - Date: 2026-09-12
 
 ## Context

@@ -11,20 +11,29 @@ import (
 	"slices"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// DefaultReconcileInterval is deliberately conservative: it notices normal
-// development-server changes promptly without continuously spawning remote
-// discovery commands.
+// DefaultReconcileInterval paces discovery for polling discoverers. With a
+// Watcher it paces local conflict retries and stream restarts instead, because
+// listener changes arrive as soon as the remote host reports them.
 const DefaultReconcileInterval = 5 * time.Second
 
-// DefaultDiscoveryTimeout bounds each remote discovery subprocess.
+// DefaultDiscoveryTimeout bounds each polling discovery subprocess and the
+// silence between reports from a Watcher.
 const DefaultDiscoveryTimeout = 10 * time.Second
 
 // Discoverer finds TCP ports currently listening on one SSH destination.
 type Discoverer interface {
 	ListeningPorts(context.Context, string) ([]uint16, error)
+}
+
+// Watcher streams listener reports over one long-lived discovery process. It
+// calls report with each pass's listener set or discovery error, including
+// unchanged passes, and returns when the process exits or ctx ends.
+type Watcher interface {
+	WatchListeningPorts(ctx context.Context, destination string, report func([]uint16, error)) error
 }
 
 // DiagnosticDiscoverer can stream subprocess diagnostics during discovery.
@@ -66,6 +75,7 @@ type Running struct {
 	cancel           context.CancelFunc
 	destination      string
 	discoverer       Discoverer
+	watcher          Watcher
 	dial             DialFunc
 	interval         time.Duration
 	discoveryTimeout time.Duration
@@ -77,14 +87,17 @@ type Running struct {
 	excluded         map[uint16]struct{}
 	conflicts        map[uint16]string
 	forwardingErrors map[uint16]error
-	lastError        error
+	discovered       []uint16
+	hasDiscovered    bool
+	discoveryErr     error
 	closed           bool
-	done             chan struct{}
+	workers          sync.WaitGroup
 }
 
 // Start performs an initial discovery and begins continuous reconciliation.
-// Discovery and bind failures are status conditions, not whole-session
-// failures.
+// A discoverer that is also a Watcher keeps one discovery process open and
+// reconciles on each changed report; others are polled. Discovery and bind
+// failures are status conditions, not whole-session failures.
 func Start(ctx context.Context, destination string, discoverer Discoverer, dial DialFunc, options Options) (*Running, error) {
 	if discoverer == nil || dial == nil {
 		return nil, fmt.Errorf("mirror requires a listener discoverer and SSH dialer")
@@ -111,15 +124,25 @@ func Start(ctx context.Context, destination string, discoverer Discoverer, dial 
 	running := &Running{
 		ctx: runningContext, cancel: cancel, destination: destination,
 		discoverer: discoverer, dial: dial, interval: interval, discoveryTimeout: discoveryTimeout, portPolicy: portPolicy,
-		forwards: make(map[uint16]*portForward), excluded: make(map[uint16]struct{}), conflicts: make(map[uint16]string), forwardingErrors: make(map[uint16]error), done: make(chan struct{}),
+		forwards: make(map[uint16]*portForward), excluded: make(map[uint16]struct{}), conflicts: make(map[uint16]string), forwardingErrors: make(map[uint16]error),
 	}
-	running.reconcile()
+	if watcher, ok := discoverer.(Watcher); ok {
+		running.watcher = watcher
+		initial := make(chan struct{})
+		var once sync.Once
+		running.workers.Add(1)
+		go running.watch(func() { once.Do(func() { close(initial) }) })
+		<-initial
+	} else {
+		running.reconcile()
+	}
+	running.workers.Add(1)
 	go running.loop()
 	return running, nil
 }
 
 func (r *Running) loop() {
-	defer close(r.done)
+	defer r.workers.Done()
 	ticker := time.NewTicker(r.interval)
 	defer ticker.Stop()
 	for {
@@ -132,24 +155,132 @@ func (r *Running) loop() {
 	}
 }
 
+// watch keeps one discovery stream running. A stream that exits or stays
+// silent for the discovery timeout is restarted after one interval; the last
+// valid listener set stays mirrored meanwhile. initial is called after the
+// first report or the first stream failure.
+func (r *Running) watch(initial func()) {
+	defer r.workers.Done()
+	defer initial()
+	for {
+		err := r.watchOnce(initial)
+		if r.ctx.Err() != nil {
+			return
+		}
+		r.recordDiscoveryError(err)
+		initial()
+		timer := time.NewTimer(r.interval)
+		select {
+		case <-r.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
+func (r *Running) watchOnce(reported func()) error {
+	streamContext, cancel := context.WithCancel(r.ctx)
+	defer cancel()
+	var stalled atomic.Bool
+	watchdog := time.AfterFunc(r.discoveryTimeout, func() {
+		stalled.Store(true)
+		cancel()
+	})
+	defer watchdog.Stop()
+	err := r.watcher.WatchListeningPorts(streamContext, r.destination, func(ports []uint16, err error) {
+		if stalled.Load() {
+			return
+		}
+		watchdog.Reset(r.discoveryTimeout)
+		r.applyReport(ports, err)
+		reported()
+	})
+	if stalled.Load() {
+		return fmt.Errorf("no listener report within %s: %w", r.discoveryTimeout, context.DeadlineExceeded)
+	}
+	if err == nil {
+		err = errors.New("remote listener discovery stream ended")
+	}
+	return err
+}
+
+// applyReport reconciles a streamed report unless it repeats the current
+// healthy listener set.
+func (r *Running) applyReport(ports []uint16, err error) {
+	r.reconcileMu.Lock()
+	defer r.reconcileMu.Unlock()
+	if err == nil {
+		r.mu.Lock()
+		unchanged := r.hasDiscovered && r.discoveryErr == nil && slices.Equal(r.discovered, ports)
+		r.mu.Unlock()
+		if unchanged {
+			return
+		}
+	}
+	r.applyDiscovery(ports, err)
+}
+
 func (r *Running) reconcile() {
 	r.reconcileMu.Lock()
 	defer r.reconcileMu.Unlock()
 	r.reconcileOnce()
 }
 
+// reconcileOnce polls the discoverer, or with a Watcher reapplies the last
+// streamed listener set so conflicted ports are retried without a remote
+// command.
 func (r *Running) reconcileOnce() {
+	if r.watcher != nil {
+		r.mu.Lock()
+		ports, ok := slices.Clone(r.discovered), r.hasDiscovered
+		r.mu.Unlock()
+		if ok {
+			_ = r.applyPorts(ports)
+		}
+		return
+	}
 	discoveryContext, cancel := context.WithTimeout(r.ctx, r.discoveryTimeout)
 	ports, err := r.discoverer.ListeningPorts(discoveryContext, r.destination)
 	cancel()
+	r.applyDiscovery(ports, err)
+}
+
+func (r *Running) recordDiscoveryError(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.closed {
+		r.discoveryErr = fmt.Errorf("discover remote TCP listeners: %w", err)
+	}
+}
+
+// applyDiscovery records one discovery result. A failed discovery keeps the
+// last valid listener set.
+func (r *Running) applyDiscovery(ports []uint16, err error) {
 	if err != nil {
-		r.mu.Lock()
-		if !r.closed {
-			r.lastError = fmt.Errorf("discover remote TCP listeners: %w", err)
-		}
+		r.recordDiscoveryError(err)
+		return
+	}
+	r.mu.Lock()
+	if r.closed {
 		r.mu.Unlock()
 		return
 	}
+	r.discovered = slices.Clone(ports)
+	r.hasDiscovered = true
+	r.mu.Unlock()
+	err = r.applyPorts(ports)
+	r.mu.Lock()
+	if !r.closed {
+		r.discoveryErr = err
+	}
+	r.mu.Unlock()
+}
+
+// applyPorts makes the forwards match ports under the current policy and
+// returns any invalid discovered port.
+func (r *Running) applyPorts(ports []uint16) error {
+	var err error
 	desired := make(map[uint16]struct{}, len(ports))
 	excluded := make(map[uint16]struct{})
 	for _, port := range ports {
@@ -167,9 +298,8 @@ func (r *Running) reconcileOnce() {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return
+		return err
 	}
-	r.lastError = err
 	r.excluded = excluded
 	removed := make(map[uint16]*portForward)
 	for port, forward := range r.forwards {
@@ -191,7 +321,7 @@ func (r *Running) reconcileOnce() {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		return
+		return err
 	}
 	for port, forward := range removed {
 		if r.forwards[port] == forward {
@@ -218,10 +348,11 @@ func (r *Running) reconcileOnce() {
 		delete(r.conflicts, port)
 	}
 	r.mu.Unlock()
+	return err
 }
 
 // SetPortPolicy replaces the effective policy and immediately reconciles the
-// currently discovered listeners.
+// currently discovered listeners. Polling discoverers rediscover first.
 func (r *Running) SetPortPolicy(policy PortPolicy) error {
 	r.reconcileMu.Lock()
 	defer r.reconcileMu.Unlock()
@@ -240,7 +371,7 @@ func (r *Running) SetPortPolicy(policy PortPolicy) error {
 func (r *Running) Status() Status {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	status := Status{Enabled: !r.closed, LastError: r.lastError}
+	status := Status{Enabled: !r.closed, LastError: r.discoveryErr}
 	for port := range r.forwards {
 		status.MirroredPorts = append(status.MirroredPorts, port)
 	}
@@ -297,13 +428,15 @@ func (r *Running) Close() error {
 	r.excluded = make(map[uint16]struct{})
 	r.conflicts = make(map[uint16]string)
 	r.forwardingErrors = make(map[uint16]error)
+	r.discovered = nil
+	r.hasDiscovered = false
 	r.mu.Unlock()
 
 	var joined error
 	for _, forward := range forwards {
 		joined = errors.Join(joined, forward.close())
 	}
-	<-r.done
+	r.workers.Wait()
 	return joined
 }
 
