@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -379,4 +380,255 @@ func waitForMirrorStatus(t *testing.T, running *mirror.Running, condition func(m
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func TestWatcherInitialReportIsAppliedBeforeStartReturns(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	watcher := newStreamingWatcher(port)
+	running, err := mirror.Start(context.Background(), "reyna", watcher, unreachableDial, mirror.Options{ReconcileInterval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+
+	if status := running.Status(); !slices.Equal(status.MirroredPorts, []uint16{port}) || status.LastError != nil {
+		t.Fatalf("status after Start = %#v, want port %d mirrored", status, port)
+	}
+}
+
+func TestWatcherAppliesListenerChangesOverOneStream(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	watcher := newStreamingWatcher()
+	running, err := mirror.Start(context.Background(), "reyna", watcher, unreachableDial, mirror.Options{ReconcileInterval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+
+	watcher.set(port)
+	waitForMirrorStatus(t, running, func(status mirror.Status) bool { return slices.Contains(status.MirroredPorts, port) })
+	watcher.set()
+	waitForMirrorStatus(t, running, func(status mirror.Status) bool { return len(status.MirroredPorts) == 0 })
+	listeners := claimDualStackPort(t, port)
+	for _, listener := range listeners {
+		_ = listener.Close()
+	}
+	if starts := watcher.starts.Load(); starts != 1 {
+		t.Fatalf("discovery streams started = %d, want 1", starts)
+	}
+}
+
+func TestWatcherConflictIsRetriedWithoutNewRemoteReports(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	local, err := net.Listen("tcp4", net.JoinHostPort("127.0.0.1", fmt.Sprint(port)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	watcher := newStreamingWatcher(port)
+	watcher.reportOnce = true
+	running, err := mirror.Start(context.Background(), "reyna", watcher, unreachableDial, mirror.Options{
+		ReconcileInterval: 10 * time.Millisecond,
+		DiscoveryTimeout:  time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	if status := running.Status(); len(status.ConflictedPorts) != 1 {
+		t.Fatalf("status = %#v, want local conflict on %d", status, port)
+	}
+
+	if err := local.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitForMirrorStatus(t, running, func(status mirror.Status) bool {
+		return slices.Contains(status.MirroredPorts, port) && len(status.ConflictedPorts) == 0
+	})
+	if reports := watcher.reports.Load(); reports != 1 {
+		t.Fatalf("remote reports = %d, want the conflict retried from the first report", reports)
+	}
+}
+
+func TestWatcherSharedPortIsClaimedAfterOtherDestinationStops(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	first, err := mirror.Start(context.Background(), "alpha", newStreamingWatcher(port), unreachableDial, mirror.Options{ReconcileInterval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+	second, err := mirror.Start(context.Background(), "beta", newStreamingWatcher(port), unreachableDial, mirror.Options{ReconcileInterval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = second.Close() })
+	waitForMirrorStatus(t, second, func(status mirror.Status) bool { return len(status.ConflictedPorts) == 1 })
+
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	waitForMirrorStatus(t, second, func(status mirror.Status) bool { return slices.Contains(status.MirroredPorts, port) })
+}
+
+func TestWatcherStreamFailureKeepsListenersAndRestarts(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	watcher := newStreamingWatcher(port)
+	running, err := mirror.Start(context.Background(), "reyna", watcher, unreachableDial, mirror.Options{ReconcileInterval: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+
+	watcher.fail(errors.New("Connection to reyna closed by remote host"))
+	status := waitForMirrorStatus(t, running, func(status mirror.Status) bool { return status.LastError != nil })
+	if !strings.Contains(status.LastError.Error(), "closed by remote host") || !slices.Equal(status.MirroredPorts, []uint16{port}) {
+		t.Fatalf("status = %#v, want stream error with port %d still mirrored", status, port)
+	}
+	waitForMirrorStatus(t, running, func(status mirror.Status) bool { return status.LastError == nil })
+	if starts := watcher.starts.Load(); starts != 2 {
+		t.Fatalf("discovery streams started = %d, want one restart", starts)
+	}
+}
+
+func TestWatcherDiscoveryErrorKeepsLastListenerSet(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	watcher := newStreamingWatcher(port)
+	running, err := mirror.Start(context.Background(), "reyna", watcher, unreachableDial, mirror.Options{ReconcileInterval: 10 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+
+	watcher.setError(errors.New("remote ss exited with status 2"))
+	status := waitForMirrorStatus(t, running, func(status mirror.Status) bool { return status.LastError != nil })
+	if !strings.Contains(status.LastError.Error(), "status 2") || !slices.Equal(status.MirroredPorts, []uint16{port}) {
+		t.Fatalf("status = %#v, want discovery error with port %d still mirrored", status, port)
+	}
+	watcher.setError(nil)
+	waitForMirrorStatus(t, running, func(status mirror.Status) bool { return status.LastError == nil })
+}
+
+func TestSilentWatcherIsBoundedAndRestarted(t *testing.T) {
+	t.Parallel()
+
+	watcher := newStreamingWatcher()
+	watcher.silent = true
+	started := time.Now()
+	running, err := mirror.Start(context.Background(), "reyna", watcher, unreachableDial, mirror.Options{
+		ReconcileInterval: 10 * time.Millisecond,
+		DiscoveryTimeout:  20 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("initial discovery took %v, want bounded timeout", elapsed)
+	}
+	if status := running.Status(); status.LastError == nil || !errors.Is(status.LastError, context.DeadlineExceeded) {
+		t.Fatalf("status error = %v, want discovery deadline", status.LastError)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for watcher.starts.Load() < 2 {
+		if time.Now().After(deadline) {
+			t.Fatal("silent discovery stream was not restarted")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestWatcherPortPolicyChangeUsesLastReport(t *testing.T) {
+	t.Parallel()
+
+	port := availableDualStackPort(t)
+	watcher := newStreamingWatcher(port)
+	watcher.reportOnce = true
+	running, err := mirror.Start(context.Background(), "reyna", watcher, unreachableDial, mirror.Options{
+		ReconcileInterval: time.Hour,
+		DiscoveryTimeout:  time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = running.Close() })
+
+	if err := running.SetPortPolicy(mirror.NewPortPolicy([]mirror.PortRange{{Start: port, End: port}})); err != nil {
+		t.Fatal(err)
+	}
+	if status := running.Status(); !slices.Equal(status.ExcludedPorts, []uint16{port}) || len(status.MirroredPorts) != 0 {
+		t.Fatalf("status = %#v, want port %d excluded immediately", status, port)
+	}
+}
+
+// streamingWatcher reports its current listeners every few milliseconds, like
+// the remote discovery loop, until it is told to fail or ctx ends.
+type streamingWatcher struct {
+	mu         sync.Mutex
+	ports      []uint16
+	err        error
+	failures   chan error
+	reportOnce bool
+	silent     bool
+	starts     atomic.Int32
+	reports    atomic.Int32
+}
+
+func newStreamingWatcher(ports ...uint16) *streamingWatcher {
+	return &streamingWatcher{ports: ports, failures: make(chan error, 1)}
+}
+
+func (w *streamingWatcher) WatchListeningPorts(ctx context.Context, _ string, report func([]uint16, error)) error {
+	w.starts.Add(1)
+	reported := false
+	for {
+		if !w.silent && (!w.reportOnce || !reported) {
+			w.mu.Lock()
+			ports, err := slices.Clone(w.ports), w.err
+			w.mu.Unlock()
+			if err != nil {
+				ports = nil
+			}
+			w.reports.Add(1)
+			report(ports, err)
+			reported = true
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-w.failures:
+			return err
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+func (w *streamingWatcher) ListeningPorts(context.Context, string) ([]uint16, error) {
+	return nil, errors.New("streaming watcher must not be polled")
+}
+
+func (w *streamingWatcher) set(ports ...uint16) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ports = slices.Clone(ports)
+}
+
+func (w *streamingWatcher) setError(err error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.err = err
+}
+
+func (w *streamingWatcher) fail(err error) {
+	w.failures <- err
 }

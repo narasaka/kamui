@@ -100,8 +100,8 @@ line lists only excluded ports currently discovered on the remote host. Mirror
 details appear below each session summary. Port lists wrap at 80 characters.
 Browser and proxy columns appear only when the displayed results include a
 session with the dedicated browser enabled.
-Reconciliation runs every five seconds. Existing local or Kamui listeners keep
-their ports, and losing sessions retry. Kamui supports TCP mirroring but not
+Remote listener changes apply within about a second. Existing local or Kamui
+listeners keep their ports, and losing sessions retry every five seconds. Kamui supports TCP mirroring but not
 UDP.
 
 ## Exit behavior
