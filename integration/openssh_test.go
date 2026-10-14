@@ -142,6 +142,7 @@ func TestRemoteListenerWatchWithDisposableOpenSSHServer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
+		defer close(done)
 		done <- (mirror.SSHDiscoverer{SSHPath: wrapper}).WatchListeningPorts(ctx, "kamui-watch-alias", func(ports []uint16, err error) {
 			if err == nil {
 				select {
