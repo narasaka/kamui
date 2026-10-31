@@ -9,7 +9,7 @@ struct KamuiMenuBarApp: App {
         MenuBarExtra {
             MenuContent(model: model)
         } label: {
-            Image(systemName: model.indicator.symbolName)
+            Image(nsImage: MenuBarIcon.image(for: model.indicator))
                 .accessibilityLabel("Kamui")
         }
         .menuBarExtraStyle(.menu)

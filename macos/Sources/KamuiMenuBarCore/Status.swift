@@ -126,13 +126,4 @@ public enum Indicator: Equatable, Sendable {
             self = .connected
         }
     }
-
-    public var symbolName: String {
-        switch self {
-        case .idle: "bolt.horizontal.circle"
-        case .connecting: "ellipsis.circle"
-        case .connected: "bolt.horizontal.circle.fill"
-        case .attention: "exclamationmark.triangle.fill"
-        }
-    }
 }
