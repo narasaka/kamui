@@ -1,7 +1,7 @@
 GOLANGCI_LINT_VERSION := $(shell tr -d '\n' < .golangci-lint-version)
 GOLANGCI_LINT := $(CURDIR)/bin/golangci-lint
 
-.PHONY: build check check-format check-lint install-golangci-lint package
+.PHONY: build check check-format check-lint check-macos-app install-golangci-lint macos-app package
 
 build:
 	go build -trimpath -o bin/kamui ./cmd/kamui
@@ -21,6 +21,12 @@ check-format:
 check-lint: install-golangci-lint
 	GOOS=darwin $(GOLANGCI_LINT) run ./...
 	GOOS=linux $(GOLANGCI_LINT) run ./...
+
+check-macos-app:
+	swift test --package-path macos
+
+macos-app:
+	scripts/build-macos-app.sh "$(or $(VERSION),0.0.0)"
 
 install-golangci-lint:
 	@expected="$(patsubst v%,%,$(GOLANGCI_LINT_VERSION))"; \
