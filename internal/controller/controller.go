@@ -18,10 +18,12 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/narasaka/kamui/internal/askpass"
 	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/proxy"
 	"github.com/narasaka/kamui/internal/session"
+	"github.com/narasaka/kamui/internal/ssh"
 	"github.com/narasaka/kamui/internal/state"
 	"github.com/narasaka/kamui/internal/version"
 )
@@ -29,7 +31,7 @@ import (
 const maximumMessageSize = 1 << 20
 
 // ProtocolVersion changes when the controller wire contract is incompatible.
-const ProtocolVersion = 4
+const ProtocolVersion = 5
 
 // Identity is the authenticated protocol/build identity of one controller.
 type Identity struct {
@@ -43,6 +45,9 @@ type Identity struct {
 type Client struct {
 	Layout      state.Layout
 	Diagnostics io.Writer
+	// Prompter answers OpenSSH prompts for an interactive connection. When it
+	// is nil, the controller does not relay prompts.
+	Prompter askpass.Prompter
 }
 
 // Identity authenticates the resident controller and reports its protocol and
@@ -167,19 +172,56 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 		StopBrowserOnStop: command.StopBrowserOnStop,
 		LoopbackMode:      command.LoopbackMode,
 		Unattended:        command.Unattended,
+		NoPrompts:         command.NoPrompts,
 		EnableMirror:      command.EnableMirror,
+		Prompts:           c.Prompter != nil && !async && !command.Unattended && !command.NoPrompts,
 	}
 	if command.PortPolicy != nil {
 		request.PortPolicy = &wirePortPolicy{ExcludedRanges: command.PortPolicy.ExcludedRanges()}
 	}
-	if err := json.NewEncoder(connection).Encode(request); err != nil {
+	encoder := json.NewEncoder(connection)
+	if err := encoder.Encode(request); err != nil {
 		return session.Result{}, fmt.Errorf("send controller command: %w", err)
 	}
-	decoder := json.NewDecoder(io.LimitReader(connection, maximumMessageSize))
+	finished := make(chan struct{})
+	defer close(finished)
+	responses := readResponses(connection, finished)
+	var prompt *pendingPrompt
+	defer func() { prompt.cancel() }()
+	// answerErr records a failed answer write; the controller may already
+	// have sent the attempt's result, which is the more useful error.
+	var answerErr error
 	for {
 		var response wireResponse
-		if err := decoder.Decode(&response); err != nil {
-			return session.Result{}, fmt.Errorf("read controller response: %w", err)
+		select {
+		case received := <-responses:
+			if received.err != nil {
+				if answerErr != nil {
+					return session.Result{}, answerErr
+				}
+				return session.Result{}, fmt.Errorf("read controller response: %w", received.err)
+			}
+			response = received.response
+		case answered := <-prompt.answers():
+			prompt = nil
+			answer := wireAnswer{OK: true, Answer: answered.text}
+			switch {
+			case errors.Is(answered.err, askpass.ErrDeclined):
+				answer = wireAnswer{}
+			case answered.err != nil:
+				return session.Result{}, answered.err
+			}
+			if err := encoder.Encode(answer); err != nil {
+				answerErr = fmt.Errorf("send OpenSSH prompt answer: %w", err)
+			}
+			continue
+		}
+		if response.Prompt != nil {
+			if !request.Prompts || prompt != nil {
+				return session.Result{}, errors.New("controller sent an unexpected OpenSSH prompt")
+			}
+			prompt = startPrompt(ctx, c.Prompter, *response.Prompt)
+			continue
 		}
 		if response.Diagnostic != "" {
 			if c.Diagnostics != nil {
@@ -194,6 +236,73 @@ func (c Client) execute(ctx context.Context, command session.Command, async bool
 		}
 		return response.Result.sessionResult()
 	}
+}
+
+type decodedResponse struct {
+	response wireResponse
+	err      error
+}
+
+// readResponses decodes controller messages until the connection fails or
+// the caller finishes, so the client notices the final result while a prompt
+// is open.
+func readResponses(connection net.Conn, finished <-chan struct{}) <-chan decodedResponse {
+	responses := make(chan decodedResponse)
+	go func() {
+		decoder := json.NewDecoder(io.LimitReader(connection, maximumMessageSize))
+		for {
+			var response wireResponse
+			err := decoder.Decode(&response)
+			select {
+			case responses <- decodedResponse{response: response, err: err}:
+			case <-finished:
+				return
+			}
+			if err != nil {
+				return
+			}
+		}
+	}()
+	return responses
+}
+
+type promptAnswer struct {
+	text string
+	err  error
+}
+
+// pendingPrompt is one prompt being answered by the requester's Prompter.
+type pendingPrompt struct {
+	stop   context.CancelFunc
+	answer chan promptAnswer
+}
+
+func startPrompt(ctx context.Context, prompter askpass.Prompter, prompt askpass.Prompt) *pendingPrompt {
+	promptContext, stop := context.WithCancel(ctx)
+	pending := &pendingPrompt{stop: stop, answer: make(chan promptAnswer, 1)}
+	go func() {
+		text, err := prompter(promptContext, prompt)
+		pending.answer <- promptAnswer{text: text, err: err}
+	}()
+	return pending
+}
+
+// answers is nil, and so never ready, when no prompt is open.
+func (p *pendingPrompt) answers() <-chan promptAnswer {
+	if p == nil {
+		return nil
+	}
+	return p.answer
+}
+
+// cancel abandons an open prompt and waits for the Prompter to restore the
+// terminal before the command reports its result.
+func (p *pendingPrompt) cancel() {
+	if p == nil {
+		return
+	}
+	p.stop()
+	<-p.answer
 }
 
 // Server is one controller listener holding the advisory controller lock.
@@ -291,8 +400,9 @@ func (s *Server) accept() {
 
 func (s *Server) handle(connection net.Conn) {
 	responses := &responseWriter{encoder: json.NewEncoder(connection)}
+	decoder := json.NewDecoder(io.LimitReader(connection, maximumMessageSize))
 	var request wireRequest
-	if err := json.NewDecoder(io.LimitReader(connection, maximumMessageSize)).Decode(&request); err != nil {
+	if err := decoder.Decode(&request); err != nil {
 		_ = responses.Encode(wireResponse{Error: "malformed controller request"})
 		return
 	}
@@ -332,6 +442,7 @@ func (s *Server) handle(connection net.Conn) {
 		StopBrowserOnStop: request.StopBrowserOnStop,
 		LoopbackMode:      request.LoopbackMode,
 		Unattended:        request.Unattended,
+		NoPrompts:         request.NoPrompts,
 		EnableMirror:      request.EnableMirror,
 		Diagnostics:       responses,
 	}
@@ -342,8 +453,23 @@ func (s *Server) handle(connection net.Conn) {
 	if request.Async {
 		command.Diagnostics = nil
 		_ = responses.Encode(wireResponse{})
-		go func() { _, _ = s.manager.Execute(s.ctx, command) }()
+		// Close waits for handlers, including this background request.
+		s.handlers.Add(1)
+		go func() {
+			defer s.handlers.Done()
+			_, _ = s.manager.Execute(s.ctx, command)
+		}()
 		return
+	}
+	if request.Prompts && request.Operation == session.Ensure && !request.Unattended && !request.NoPrompts {
+		broker, err := askpass.NewBroker(s.ctx, s.layout.Runtime, relayPrompts(responses, decoder))
+		if err != nil {
+			// Connections that need no prompt still work without the relay.
+			_, _ = fmt.Fprintf(responses, "NOTICE: OpenSSH prompts cannot be relayed to this terminal: %v\n", err)
+		} else {
+			defer func() { _ = broker.Close() }()
+			command.Askpass = &ssh.Askpass{Socket: broker.Socket(), Token: broker.Token(), Waiting: broker.Waiting}
+		}
 	}
 	result, err := s.manager.Execute(s.ctx, command)
 	if err != nil {
@@ -351,6 +477,43 @@ func (s *Server) handle(connection net.Conn) {
 		return
 	}
 	_ = responses.Encode(wireResponse{Result: makeWireResult(result)})
+}
+
+// relayPrompts sends each OpenSSH prompt to the requesting client and waits
+// for its answer on the same connection. The broker serializes calls.
+func relayPrompts(responses *responseWriter, decoder *json.Decoder) askpass.Prompter {
+	return func(ctx context.Context, prompt askpass.Prompt) (string, error) {
+		// Cancellation is permanent for a broker. Checking first ensures that
+		// an abandoned answer read never overlaps a new one.
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		if err := responses.Encode(wireResponse{Prompt: &prompt}); err != nil {
+			return "", err
+		}
+		type reply struct {
+			answer wireAnswer
+			err    error
+		}
+		replies := make(chan reply, 1)
+		go func() {
+			var answer wireAnswer
+			err := decoder.Decode(&answer)
+			replies <- reply{answer: answer, err: err}
+		}()
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case received := <-replies:
+			if received.err != nil {
+				return "", received.err
+			}
+			if !received.answer.OK {
+				return "", askpass.ErrDeclined
+			}
+			return received.answer.Answer, nil
+		}
+	}
 }
 
 type responseWriter struct {
@@ -441,7 +604,9 @@ type wireRequest struct {
 	StopBrowserOnStop bool               `json:"stopBrowserOnStop,omitempty"`
 	LoopbackMode      proxy.LoopbackMode `json:"loopbackMode,omitempty"`
 	Unattended        bool               `json:"unattended,omitempty"`
+	NoPrompts         bool               `json:"noPrompts,omitempty"`
 	EnableMirror      bool               `json:"enableMirror,omitempty"`
+	Prompts           bool               `json:"prompts,omitempty"`
 	PortPolicy        *wirePortPolicy    `json:"portPolicy,omitempty"`
 	Probe             bool               `json:"probe,omitempty"`
 	Shutdown          bool               `json:"shutdown,omitempty"`
@@ -477,10 +642,17 @@ type wireResult struct {
 }
 
 type wireResponse struct {
-	Result     wireResult `json:"result"`
-	Identity   *Identity  `json:"identity,omitempty"`
-	Diagnostic string     `json:"diagnostic,omitempty"`
-	Error      string     `json:"error,omitempty"`
+	Result     wireResult      `json:"result"`
+	Identity   *Identity       `json:"identity,omitempty"`
+	Diagnostic string          `json:"diagnostic,omitempty"`
+	Prompt     *askpass.Prompt `json:"prompt,omitempty"`
+	Error      string          `json:"error,omitempty"`
+}
+
+// wireAnswer is the client's reply to one prompt.
+type wireAnswer struct {
+	Answer string `json:"answer,omitempty"`
+	OK     bool   `json:"ok"`
 }
 
 func makeWireResult(result session.Result) wireResult {
