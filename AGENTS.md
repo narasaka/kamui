@@ -5,7 +5,7 @@ Kamui is a Go CLI for accessing a remote SSH host’s loopback services from mac
 ## Source of truth
 
 - Treat `PLAN.md` as historical context; the original implementation plan is complete.
-- Use `README.md`, `docs/cli.md`, and `docs/configuration.md` for current behavior.
+- Use `README.md`, `docs/how-it-works.md`, `docs/cli.md`, `docs/configuration.md`, and `docs/menu-bar-app.md` for current behavior.
 - Consult `docs/decisions/` before changing established architecture or lifecycle behavior.
 
 ## Development
