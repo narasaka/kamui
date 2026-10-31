@@ -14,6 +14,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/narasaka/kamui/internal/askpass"
 )
 
 // State describes the availability of an SSH connection.
@@ -72,6 +74,8 @@ type StartRequest struct {
 	Stdin  io.Reader
 	Stdout io.Writer
 	Stderr io.Writer
+	// Env replaces the inherited environment when non-nil.
+	Env []string
 }
 
 // Process is the controllable portion of an operating-system child process.
@@ -119,7 +123,30 @@ type Transport struct {
 	BackgroundStderr io.Writer
 	ReadinessTimeout time.Duration
 	Inspector        ConfigInspector
+	// AskpassProgram is the kamui executable that OpenSSH runs as
+	// SSH_ASKPASS. Prompts are relayed only when it and Askpass are set.
+	AskpassProgram string
+	// Askpass routes one interactive connection's prompts to its requester.
+	Askpass *Askpass
+	// PromptLimit bounds a connection attempt that keeps waiting for prompt
+	// answers. Zero means five minutes.
+	PromptLimit time.Duration
+	// NoPrompts adds BatchMode=yes to an attended connection, so a caller
+	// without a terminal receives a prompt failure while still receiving
+	// diagnostics and warnings.
+	NoPrompts bool
 }
+
+// Askpass identifies the prompt broker for one interactive connection.
+type Askpass struct {
+	Socket string
+	Token  string
+	// Waiting reports whether a prompt is waiting for the user. The readiness
+	// limit does not count that time, up to Transport.PromptLimit in total.
+	Waiting func() bool
+}
+
+const defaultPromptLimit = 5 * time.Minute
 
 // Connect starts OpenSSH and returns only after its SOCKS listener is ready.
 func (t Transport) Connect(ctx context.Context, destination string) (*Connection, error) {
@@ -185,7 +212,7 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 		"-o", "ServerAliveCountMax=3",
 		"-o", "PermitLocalCommand=no",
 	}
-	if unattended {
+	if unattended || t.NoPrompts {
 		arguments = append(arguments, "-o", "BatchMode=yes")
 	}
 	arguments = append(arguments, destination)
@@ -195,6 +222,14 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 		Stdin:  defaultReader(t.Stdin),
 		Stdout: defaultWriter(t.Stdout),
 		Stderr: processStderr,
+	}
+	if !unattended && !t.NoPrompts && t.Askpass != nil && t.AskpassProgram != "" {
+		request.Env = append(os.Environ(),
+			"SSH_ASKPASS="+t.AskpassProgram,
+			"SSH_ASKPASS_REQUIRE=force",
+			askpass.SocketEnv+"="+t.Askpass.Socket,
+			askpass.TokenEnv+"="+t.Askpass.Token,
+		)
 	}
 	process, err := launcher.Start(request)
 	if err != nil {
@@ -210,6 +245,11 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 	defer deadline.Stop()
 	ticker := time.NewTicker(20 * time.Millisecond)
 	defer ticker.Stop()
+	started := time.Now()
+	promptLimit := t.PromptLimit
+	if promptLimit == 0 {
+		promptLimit = defaultPromptLimit
+	}
 
 	for {
 		probe, err := (&net.Dialer{Timeout: 100 * time.Millisecond}).DialContext(ctx, "tcp4", address)
@@ -229,8 +269,15 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 			_ = connection.Close()
 			return nil, stderr.String(), fmt.Errorf("OpenSSH SOCKS listener was not ready within %s", timeout)
 		case <-ticker.C:
+			if t.waitingForPrompt() && time.Since(started) < promptLimit {
+				deadline.Reset(timeout)
+			}
 		}
 	}
+}
+
+func (t Transport) waitingForPrompt() bool {
+	return !t.NoPrompts && t.Askpass != nil && t.Askpass.Waiting != nil && t.Askpass.Waiting()
 }
 
 func isForwardBindRace(stderr string) bool {
@@ -319,6 +366,11 @@ func availableLoopbackAddress() (string, error) {
 
 type execLauncher struct{}
 
+// pipeCloseDelay bounds how long reaping OpenSSH waits for its output pipes.
+// Descendants such as an askpass helper inherit OpenSSH's stderr and could
+// otherwise keep Wait from returning after OpenSSH itself has exited.
+const pipeCloseDelay = 2 * time.Second
+
 type synchronizedBuffer struct {
 	mu     sync.Mutex
 	buffer bytes.Buffer
@@ -358,6 +410,8 @@ func (execLauncher) Start(request StartRequest) (Process, error) {
 	command.Stdin = request.Stdin
 	command.Stdout = request.Stdout
 	command.Stderr = request.Stderr
+	command.Env = request.Env
+	command.WaitDelay = pipeCloseDelay
 	if err := command.Start(); err != nil {
 		return nil, err
 	}
