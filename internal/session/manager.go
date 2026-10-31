@@ -40,9 +40,13 @@ type Command struct {
 	StopBrowserOnStop bool
 	LoopbackMode      proxy.LoopbackMode
 	Unattended        bool
-	EnableMirror      bool
-	PortPolicy        *mirror.PortPolicy
-	Diagnostics       io.Writer
+	// NoPrompts forbids OpenSSH prompts without making the request unattended.
+	NoPrompts bool
+	// Askpass relays OpenSSH prompts for an interactive connection.
+	Askpass      *ssh.Askpass
+	EnableMirror bool
+	PortPolicy   *mirror.PortPolicy
+	Diagnostics  io.Writer
 }
 
 // SessionState is the user-visible lifecycle state.
@@ -91,7 +95,19 @@ type Result struct {
 
 // Manager owns all in-process host sessions.
 type Manager struct {
-	mu               sync.Mutex
+	// mu serializes lifecycle changes. It is released while OpenSSH connects,
+	// which can wait minutes for a user to answer a prompt; attempts records
+	// that connection so the same destination is not connected twice.
+	mu       sync.Mutex
+	attempts map[string]*connectionAttempt
+	// connected runs after OpenSSH connects and before mu is reacquired, and
+	// waiting runs when a request starts waiting for another attempt. Tests
+	// use them to reach those points deterministically.
+	connected func()
+	waiting   func()
+	// sessionsMu guards the sessions map so status and open never wait for
+	// lifecycle changes. Writers hold both locks.
+	sessionsMu       sync.RWMutex
 	transport        ssh.Transport
 	browsers         *browser.Catalog
 	profileRoot      string
@@ -142,6 +158,7 @@ func NewManagerWithOptions(options ManagerOptions) *Manager {
 		ctx:              ctx,
 		cancel:           cancel,
 		sessions:         make(map[string]*managedSession),
+		attempts:         make(map[string]*connectionAttempt),
 		logger:           logger,
 		proxyAddresses:   options.ProxyAddresses,
 		mirrorDiscoverer: options.MirrorDiscoverer,
@@ -171,18 +188,21 @@ func (m *Manager) Execute(ctx context.Context, command Command) (Result, error) 
 }
 
 func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	destination := command.Destination
-	if m.closed {
-		return Result{}, errors.New("session manager is closed")
+	if err := m.lockWithoutAttempt(ctx, destination.Key()); err != nil {
+		return Result{}, err
 	}
+	defer m.mu.Unlock()
 	if existing := m.sessions[destination.Key()]; existing != nil {
 		state := existing.snapshot().State
 		if state == SessionUnavailable || state == SessionAuthenticationRequired {
-			connection, err := m.connect(m.ctx, destination, command.Unattended, command.Diagnostics)
+			connection, err := m.connectUnlocked(ctx, destination, command)
 			if err != nil {
 				return Result{}, err
+			}
+			if m.sessions[destination.Key()] != existing {
+				_ = connection.Close()
+				return Result{}, fmt.Errorf("session for %s stopped while connecting", destination)
 			}
 			existing.mu.Lock()
 			old := existing.connection
@@ -207,7 +227,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 			return Result{}, fmt.Errorf("read saved proxy address: %w", err)
 		}
 	}
-	connection, err := m.connect(m.ctx, destination, command.Unattended, command.Diagnostics)
+	connection, err := m.connectUnlocked(ctx, destination, command)
 	if err != nil {
 		m.logger.Warn("Kamui session lifecycle", "event", "ssh_bootstrap_failed", "session_key", destination.Key(), "failure_kind", connectFailureKind(err))
 		return Result{}, fmt.Errorf("SSH authentication or connection failed for %s: %w", destination, err)
@@ -239,7 +259,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 		_ = managed.close()
 		return Result{}, err
 	}
-	m.sessions[destination.Key()] = managed
+	m.storeSession(destination.Key(), managed)
 	m.logger.Info("Kamui session lifecycle", "event", "session_started", "session_key", destination.Key(), "browser", managed.snapshot().Browser)
 	go m.monitor(managed)
 	return Result{Session: managed.snapshot()}, nil
@@ -323,21 +343,119 @@ func (w *initialDiagnosticWriter) Disable() {
 	w.writer = nil
 }
 
-func (m *Manager) connect(ctx context.Context, destination Destination, unattended bool, diagnostics io.Writer) (*ssh.Connection, error) {
-	if unattended {
+// connectionAttempt is one OpenSSH connection in progress without mu held.
+type connectionAttempt struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	// cancelled is set under mu. A connection that succeeds after its
+	// attempt was cancelled is closed instead of published.
+	cancelled bool
+	// stops counts, under mu, how often stop or stop-all cancelled the
+	// attempt. A request waiting for it fails if a stop arrives while it
+	// waits, instead of connecting again.
+	stops int
+}
+
+// lockWithoutAttempt acquires mu once no connection attempt for key is in
+// progress and the manager is open.
+func (m *Manager) lockWithoutAttempt(ctx context.Context, key string) error {
+	m.mu.Lock()
+	for {
+		if m.closed {
+			m.mu.Unlock()
+			return errors.New("session manager is closed")
+		}
+		attempt := m.attempts[key]
+		if attempt == nil {
+			return nil
+		}
+		// A request sent after a stop waits for cleanup and then connects.
+		stopsBefore := attempt.stops
+		m.mu.Unlock()
+		if m.waiting != nil {
+			m.waiting()
+		}
+		select {
+		case <-attempt.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		m.mu.Lock()
+		// Shutdown reports itself at the top of the loop.
+		if attempt.stops != stopsBefore && !m.closed {
+			m.mu.Unlock()
+			return errors.New("the destination was stopped while this request waited for its connection")
+		}
+	}
+}
+
+// connectUnlocked connects with mu released, so other destinations, stop, and
+// idle expiry proceed while OpenSSH waits. The caller holds mu and has
+// checked that no attempt for the destination is in progress. Stop, stop-all,
+// expiry, Close, and cancellation of ctx cancel the attempt; the controller
+// passes its own context, so a disconnecting client does not, although an
+// open prompt then fails. On return mu is held again.
+func (m *Manager) connectUnlocked(ctx context.Context, destination Destination, command Command) (*ssh.Connection, error) {
+	key := destination.Key()
+	attemptContext, cancel := context.WithCancel(m.ctx)
+	stopWithRequest := context.AfterFunc(ctx, cancel)
+	attempt := &connectionAttempt{cancel: cancel, done: make(chan struct{})}
+	m.attempts[key] = attempt
+	m.mu.Unlock()
+	connection, err := m.connect(attemptContext, destination, command)
+	stopWithRequest()
+	cancel()
+	if m.connected != nil {
+		m.connected()
+	}
+	m.mu.Lock()
+	// Close waits for done, so a discarded connection is closed first.
+	defer func() {
+		delete(m.attempts, key)
+		close(attempt.done)
+	}()
+	if err == nil && (m.closed || attempt.cancelled) {
+		_ = connection.Close()
+		if m.closed {
+			return nil, errors.New("session manager is closed")
+		}
+		return nil, fmt.Errorf("connection to %s was cancelled", destination)
+	}
+	return connection, err
+}
+
+// cancelAttempt cancels key's connection attempt and reports whether one was
+// in progress. stopped marks a cancellation by stop or stop-all, which also
+// fails requests waiting for the attempt. The caller holds mu.
+func (m *Manager) cancelAttempt(key string, stopped bool) bool {
+	attempt := m.attempts[key]
+	if attempt != nil {
+		attempt.cancelled = true
+		if stopped {
+			attempt.stops++
+		}
+		attempt.cancel()
+	}
+	return attempt != nil
+}
+
+func (m *Manager) connect(ctx context.Context, destination Destination, command Command) (*ssh.Connection, error) {
+	if command.Unattended {
 		return m.transport.ConnectUnattended(ctx, destination.String())
 	}
 	transport := m.transport
-	if diagnostics != nil {
-		transport.Stderr = diagnostics
+	if command.Diagnostics != nil {
+		transport.Stderr = command.Diagnostics
 	}
+	transport.Askpass = command.Askpass
+	transport.NoPrompts = command.NoPrompts
 	return transport.Connect(ctx, destination.String())
 }
 
 func (m *Manager) open(ctx context.Context, command Command) (Result, error) {
-	m.mu.Lock()
+	m.sessionsMu.RLock()
 	managed := m.sessions[command.Destination.Key()]
-	m.mu.Unlock()
+	m.sessionsMu.RUnlock()
 	if managed == nil {
 		return Result{}, fmt.Errorf("no Kamui session for %s", command.Destination)
 	}
@@ -355,8 +473,8 @@ func (m *Manager) open(ctx context.Context, command Command) (Result, error) {
 }
 
 func (m *Manager) status(destination Destination) (Result, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.sessionsMu.RLock()
+	defer m.sessionsMu.RUnlock()
 	if destination.String() == "" {
 		result := Result{Sessions: make([]SessionStatus, 0, len(m.sessions))}
 		for _, managed := range m.sessions {
@@ -377,10 +495,13 @@ func (m *Manager) status(destination Destination) (Result, error) {
 func (m *Manager) stopAll() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for key := range m.attempts {
+		m.cancelAttempt(key, true)
+	}
 	var joined error
 	for key, managed := range m.sessions {
 		joined = errors.Join(joined, managed.close())
-		delete(m.sessions, key)
+		m.removeSession(key)
 	}
 	return joined
 }
@@ -389,11 +510,15 @@ func (m *Manager) stop(destination Destination) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	key := destination.Key()
+	cancelled := m.cancelAttempt(key, true)
 	managed := m.sessions[key]
 	if managed == nil {
+		if cancelled {
+			return nil
+		}
 		return fmt.Errorf("no Kamui session for %s", destination)
 	}
-	delete(m.sessions, key)
+	m.removeSession(key)
 	m.logger.Info("Kamui session lifecycle", "event", "session_stopped", "session_key", key)
 	return managed.close()
 }
@@ -537,7 +662,8 @@ func (m *Manager) expire(managed *managedSession) {
 		m.mu.Unlock()
 		return
 	}
-	delete(m.sessions, key)
+	m.removeSession(key)
+	m.cancelAttempt(key, false)
 	m.mu.Unlock()
 	m.logger.Info("Kamui session lifecycle", "event", "session_expired", "session_key", key)
 	_ = managed.close()
@@ -559,10 +685,12 @@ func connectFailureKind(err error) string {
 }
 
 // Close stops all proxies and child processes.
+// It returns after in-flight connection attempts have stopped their OpenSSH
+// children, so none outlives the controller.
 func (m *Manager) Close() error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.closed {
+		m.mu.Unlock()
 		return nil
 	}
 	m.closed = true
@@ -570,7 +698,30 @@ func (m *Manager) Close() error {
 	var joined error
 	for key, managed := range m.sessions {
 		joined = errors.Join(joined, managed.close())
-		delete(m.sessions, key)
+		m.removeSession(key)
+	}
+	attempts := make([]chan struct{}, 0, len(m.attempts))
+	for key, attempt := range m.attempts {
+		m.cancelAttempt(key, true)
+		attempts = append(attempts, attempt.done)
+	}
+	m.mu.Unlock()
+	// Attempts reacquire mu to finish, so wait without holding it.
+	for _, done := range attempts {
+		<-done
 	}
 	return joined
+}
+
+// storeSession and removeSession change the map; callers hold mu.
+func (m *Manager) storeSession(key string, managed *managedSession) {
+	m.sessionsMu.Lock()
+	defer m.sessionsMu.Unlock()
+	m.sessions[key] = managed
+}
+
+func (m *Manager) removeSession(key string) {
+	m.sessionsMu.Lock()
+	defer m.sessionsMu.Unlock()
+	delete(m.sessions, key)
 }
