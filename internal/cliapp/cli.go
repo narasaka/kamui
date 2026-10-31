@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	kamuiapp "github.com/narasaka/kamui/internal/app"
+	"github.com/narasaka/kamui/internal/askpass"
 	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/mirror"
 	"github.com/narasaka/kamui/internal/proxy"
@@ -33,6 +34,8 @@ type Streams struct {
 	In     io.Reader
 	Out    io.Writer
 	ErrOut io.Writer
+	// Prompter answers OpenSSH prompts. Nil means this invocation cannot.
+	Prompter askpass.Prompter
 }
 
 // NewCommand returns Kamui's complete command grammar.
@@ -46,6 +49,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 	if progressWriter == nil {
 		progressWriter = streams.Out
 	}
+	prompter := streams.Prompter
 	command := &cli.Command{
 		Name:      "kamui",
 		Version:   version.Version,
@@ -76,7 +80,9 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			result, err := application.Execute(ctx, kamuiapp.Request{
 				Operation: kamuiapp.Mirror, Destination: destination.String(),
 				IncludePorts: cmd.StringSlice("include-port"), ExcludePorts: cmd.StringSlice("exclude-port"),
-				Diagnostics: streams.ErrOut,
+				NonInteractive: cmd.Bool("non-interactive"),
+				Prompter:       promptAfter(progress.stop, prompter),
+				Diagnostics:    streams.ErrOut,
 			})
 			clearErr := progress.stop()
 			if err != nil {
@@ -127,6 +133,7 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 					Destination: destination.String(),
 					Browser:     browser.Selection{Explicit: cmd.String("browser"), Family: cmd.String("browser-family")},
 					Loopback:    loopback,
+					Prompter:    prompter,
 					Diagnostics: streams.ErrOut,
 				})
 				if err != nil {
@@ -158,7 +165,9 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				result, err := application.Execute(ctx, kamuiapp.Request{
 					Operation: kamuiapp.Mirror, Destination: cmd.Args().First(),
 					IncludePorts: cmd.StringSlice("include-port"), ExcludePorts: cmd.StringSlice("exclude-port"),
-					Diagnostics: streams.ErrOut,
+					NonInteractive: cmd.Bool("non-interactive"),
+					Prompter:       prompter,
+					Diagnostics:    streams.ErrOut,
 				})
 				if err != nil {
 					return err
@@ -192,7 +201,10 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			Name:      "status",
 			Usage:     "show session status",
 			ArgsUsage: "[SSH_DESTINATION]",
-			Flags:     []cli.Flag{&cli.BoolFlag{Name: "verbose"}},
+			Flags: []cli.Flag{
+				&cli.BoolFlag{Name: "verbose"},
+				&cli.BoolFlag{Name: "json", Usage: "print machine-readable status"},
+			},
 			Action: func(ctx context.Context, cmd *cli.Command) error {
 				if err := atMostOneDestination(cmd); err != nil {
 					return err
@@ -203,6 +215,13 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 				result, err := application.Execute(ctx, kamuiapp.Request{Operation: kamuiapp.Status, Destination: cmd.Args().First()})
 				if err != nil {
 					return err
+				}
+				if cmd.Bool("json") {
+					statuses := result.Sessions
+					if cmd.NArg() != 0 {
+						statuses = []session.SessionStatus{result.Session}
+					}
+					return printStatusJSON(streams.Out, statuses)
 				}
 				if cmd.NArg() == 0 {
 					return printStatusesWithStyle(streams.Out, result.Sessions, cmd.Bool("verbose"), styleForWriter(streams.Out))
@@ -366,6 +385,7 @@ func mirrorPortFlags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringSliceFlag{Name: "include-port", Usage: "mirror a port or inclusive port range (repeatable)", Local: true},
 		&cli.StringSliceFlag{Name: "exclude-port", Usage: "exclude a port or inclusive port range (repeatable)", Local: true},
+		&cli.BoolFlag{Name: "non-interactive", Usage: "fail instead of letting OpenSSH prompt for authentication", Local: true},
 	}
 }
 
@@ -597,4 +617,17 @@ func shellWord(value string) string {
 		return value
 	}
 	return "'" + strings.ReplaceAll(value, "'", `'"'"'`) + "'"
+}
+
+// promptAfter clears the connection progress line before the first prompt.
+func promptAfter(clear func() error, prompter askpass.Prompter) askpass.Prompter {
+	if prompter == nil {
+		return nil
+	}
+	return func(ctx context.Context, prompt askpass.Prompt) (string, error) {
+		if err := clear(); err != nil {
+			return "", err
+		}
+		return prompter(ctx, prompt)
+	}
 }
