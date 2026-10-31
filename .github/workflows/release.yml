@@ -63,6 +63,87 @@ jobs:
           KAMUI_BUILD_DATE: ${{ steps.release.outputs.build_date }}
         run: make package VERSION=${{ steps.release.outputs.version }}
 
+      - name: Check menu bar app
+        run: make check-macos-app
+
+      - name: Check menu bar app signing credentials
+        id: app_signing
+        env:
+          MACOS_DEVELOPER_ID_P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        shell: bash
+        run: |
+          names=(MACOS_DEVELOPER_ID_P12 MACOS_DEVELOPER_ID_P12_PASSWORD APPLE_NOTARY_KEY_P8 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID)
+          missing=()
+          for name in "${names[@]}"; do
+            [[ -n "${!name}" ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} == ${#names[@]} )); then
+            echo "::warning::Skipping the menu bar app because Developer ID signing and notarization secrets are not configured."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          elif (( ${#missing[@]} > 0 )); then
+            echo "missing menu bar app release secrets: ${missing[*]}" >&2
+            exit 1
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Import Developer ID certificate
+        id: keychain
+        if: steps.app_signing.outputs.enabled == 'true'
+        env:
+          MACOS_DEVELOPER_ID_P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+        shell: bash
+        run: |
+          keychain="$RUNNER_TEMP/kamui-signing.keychain-db"
+          keychain_password="$(openssl rand -hex 32)"
+          certificate="$RUNNER_TEMP/developer-id.p12"
+          trap 'rm -f "$certificate"' EXIT
+          printf '%s' "$MACOS_DEVELOPER_ID_P12" | base64 --decode > "$certificate"
+          security create-keychain -p "$keychain_password" "$keychain"
+          security set-keychain-settings -lut 21600 "$keychain"
+          security unlock-keychain -p "$keychain_password" "$keychain"
+          security import "$certificate" -k "$keychain" -P "$MACOS_DEVELOPER_ID_P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$keychain_password" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" $(security list-keychains -d user | tr -d '"')
+          identity="$(security find-identity -v -p codesigning "$keychain" | awk -F'"' '/Developer ID Application/ { print $2; exit }')"
+          if [[ -z "$identity" ]]; then
+            echo "MACOS_DEVELOPER_ID_P12 has no valid Developer ID Application identity." >&2
+            echo "It must include the Developer ID G2 intermediate; see docs/install.md." >&2
+            security find-identity -p codesigning "$keychain" >&2
+            exit 1
+          fi
+          {
+            echo "path=$keychain"
+            echo "identity=$identity"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build, sign, and notarize menu bar app
+        if: steps.app_signing.outputs.enabled == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          KAMUI_CODESIGN_IDENTITY: ${{ steps.keychain.outputs.identity }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          KAMUI_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          KAMUI_NOTARY_ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        shell: bash
+        run: |
+          export KAMUI_NOTARY_KEY="$RUNNER_TEMP/notary-key.p8"
+          trap 'rm -f "$KAMUI_NOTARY_KEY"' EXIT
+          printf '%s\n' "$APPLE_NOTARY_KEY_P8" > "$KAMUI_NOTARY_KEY"
+          scripts/build-macos-app.sh "$VERSION"
+          rm -rf dist/Kamui.app
+
+      - name: Remove signing keychain
+        if: always() && steps.keychain.outputs.path != ''
+        env:
+          KEYCHAIN: ${{ steps.keychain.outputs.path }}
+        run: security delete-keychain "$KEYCHAIN"
+
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -114,18 +195,46 @@ jobs:
           File.write(path, formula)
           RUBY
 
-      - name: Publish Homebrew formula
+      - name: Update Homebrew cask
+        if: steps.app_signing.outputs.enabled == 'true'
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
+        run: |
+          archive="dist/Kamui_${VERSION}_macos.zip"
+          APP_SHA="$(shasum -a 256 "$archive" | awk '{print $1}')"
+          export APP_SHA
+          mkdir -p homebrew-tap/Casks
+          ruby <<'RUBY'
+          cask = File.read("Casks/kamui-app.rb").sub(/\A(#.*\n)+/, "")
+          replacements = {
+            /^  version ".*"$/ => %(  version "#{ENV.fetch("VERSION")}"),
+            /^  sha256 ".*"$/ => %(  sha256 "#{ENV.fetch("APP_SHA")}"),
+          }
+          replacements.each do |pattern, replacement|
+            matches = cask.scan(pattern).length
+            abort "expected one #{pattern.inspect} in Casks/kamui-app.rb, found #{matches}" unless matches == 1
+            cask.sub!(pattern, replacement)
+          end
+          File.write("homebrew-tap/Casks/kamui-app.rb", cask)
+          RUBY
+
+      - name: Publish Homebrew formula and cask
         working-directory: homebrew-tap
         env:
           VERSION: ${{ steps.release.outputs.version }}
+        shell: bash
         run: |
-          if git diff --quiet -- kamui.rb; then
-            echo "kamui.rb already describes v${VERSION}"
+          git add kamui.rb
+          if [[ -f Casks/kamui-app.rb ]]; then
+            git add Casks/kamui-app.rb
+          fi
+          if git diff --cached --quiet; then
+            echo "The tap already describes v${VERSION}"
             exit 0
           fi
-          git diff --check
+          git diff --cached --check
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add kamui.rb
           git commit -m "kamui: update to v${VERSION}"
           git push origin HEAD:main

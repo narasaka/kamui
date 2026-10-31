@@ -56,6 +56,15 @@ jobs:
         if: runner.os == 'macOS'
         run: scripts/package.sh ci
 
+  macos-app:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test menu bar app
+        run: make check-macos-app
+      - name: Build universal menu bar app
+        run: KAMUI_OUTPUT_ROOT="$RUNNER_TEMP/kamui-app" scripts/build-macos-app.sh 0.0.0
+
   browser-smoke:
     runs-on: macos-latest
     steps:
