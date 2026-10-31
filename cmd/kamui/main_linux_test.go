@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -25,17 +26,26 @@ func TestCommandAndControllerShareDefaultXDGRuntime(t *testing.T) {
 	if output, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build kamui: %v: %s", err, output)
 	}
-	command := exec.Command(executable, "status")
+	// Status and stop never start a controller. Open does, and its missing
+	// session error can only come from the controller it started.
+	command := exec.Command(executable, "open", "kamui-runtime-test")
 	null, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { _ = null.Close() }()
+	output, err := os.CreateTemp(root, "kamui-output-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = output.Close() }()
 	command.Stdin = null
-	command.Stdout = null
-	command.Stderr = null
-	if err := command.Run(); err != nil {
-		t.Fatalf("kamui status: %v", err)
+	command.Stdout = output
+	command.Stderr = output
+	err = command.Run()
+	diagnostics, _ := os.ReadFile(output.Name())
+	if err == nil || !strings.Contains(string(diagnostics), "no Kamui session for kamui-runtime-test") {
+		t.Fatalf("kamui open: %v: %s; want the controller's missing-session error", err, diagnostics)
 	}
 
 	layout, err := state.DefaultLayout()
