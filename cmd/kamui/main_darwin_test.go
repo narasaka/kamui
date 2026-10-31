@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,7 +48,9 @@ func TestCommandAndControllerShareDefaultMacOSRuntime(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	command := exec.CommandContext(ctx, executable, "status")
+	// Status and stop never start a controller. Open does, and its missing
+	// session error can only come from the controller it started.
+	command := exec.CommandContext(ctx, executable, "open", "kamui-runtime-test")
 	null, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -61,13 +64,14 @@ func TestCommandAndControllerShareDefaultMacOSRuntime(t *testing.T) {
 	command.Stdin = null
 	command.Stdout = output
 	command.Stderr = output
-	if err := command.Run(); err != nil {
-		_ = output.Sync()
-		diagnostics, _ := os.ReadFile(output.Name())
-		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-			t.Fatalf("kamui status did not contact its newly started controller within 3 seconds: %s", diagnostics)
-		}
-		t.Fatalf("kamui status: %v: %s", err, diagnostics)
+	err = command.Run()
+	_ = output.Sync()
+	diagnostics, _ := os.ReadFile(output.Name())
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		t.Fatalf("kamui open did not contact its newly started controller within 3 seconds: %s", diagnostics)
+	}
+	if err == nil || !strings.Contains(string(diagnostics), "no Kamui session for kamui-runtime-test") {
+		t.Fatalf("kamui open: %v: %s; want the controller's missing-session error", err, diagnostics)
 	}
 
 	probeCtx, probeCancel := context.WithTimeout(context.Background(), time.Second)

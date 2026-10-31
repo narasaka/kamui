@@ -459,3 +459,130 @@ func (p *listeningProcess) Kill() error {
 }
 
 var _ io.Closer = (*ssh.Connection)(nil)
+
+// Not parallel: its child processes slow the other tests' port allocation
+// enough to make their bind races likely.
+func TestTimedOutConnectReturnsWhenDescendantKeepsStderrOpen(t *testing.T) {
+	// Like an askpass helper waiting for an answer, the background child
+	// inherits OpenSSH's stderr and outlives it.
+	fakeSSH := filepath.Join(t.TempDir(), "ssh")
+	if err := os.WriteFile(fakeSSH, []byte("#!/bin/sh\nsleep 30 &\nexec sleep 30\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	transport := ssh.Transport{SSHPath: fakeSSH, Stderr: &lockedWriter{writer: &stderr}, ReadinessTimeout: 100 * time.Millisecond}
+	started := time.Now()
+	_, err := transport.Connect(context.Background(), "reyna")
+	if err == nil || !strings.Contains(err.Error(), "not ready") {
+		t.Fatalf("Connect error = %v, want readiness timeout", err)
+	}
+	if elapsed := time.Since(started); elapsed > 10*time.Second {
+		t.Fatalf("Connect took %s after OpenSSH was killed", elapsed)
+	}
+}
+
+type lockedWriter struct {
+	mu     sync.Mutex
+	writer io.Writer
+}
+
+func (w *lockedWriter) Write(value []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writer.Write(value)
+}
+
+// Not parallel: the delayed listener binds its allocated port late, which
+// would race other tests' port allocation.
+func TestReadinessLimitExcludesTimeWaitingForPromptAnswer(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		waiting bool
+		forever bool
+		wantErr bool
+	}{
+		{name: "prompt open", waiting: true},
+		{name: "no prompt", wantErr: true},
+		{name: "prompt left open past the limit", waiting: true, forever: true, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const answeredAfter = 400 * time.Millisecond
+			started := time.Now()
+			delay, promptLimit := answeredAfter+50*time.Millisecond, time.Duration(0)
+			if test.forever {
+				delay, promptLimit = time.Hour, 300*time.Millisecond
+			}
+			transport := ssh.Transport{
+				SSHPath: "/usr/bin/true", Launcher: delayedSOCKSLauncher{delay: delay},
+				ReadinessTimeout: 150 * time.Millisecond, PromptLimit: promptLimit, AskpassProgram: "/usr/local/bin/kamui",
+				Askpass: &ssh.Askpass{Socket: "/unused", Token: "unused", Waiting: func() bool {
+					return test.waiting && (test.forever || time.Since(started) < answeredAfter)
+				}},
+			}
+			connection, err := transport.Connect(context.Background(), "reyna")
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Connect error = %v, want error %v", err, test.wantErr)
+			}
+			if elapsed := time.Since(started); elapsed > 2*time.Second {
+				t.Fatalf("Connect took %s, want the prompt limit to end it", elapsed)
+			}
+			if connection != nil {
+				_ = connection.Close()
+			}
+		})
+	}
+}
+
+// delayedSOCKSLauncher opens the dynamic-forward listener after a delay, as
+// OpenSSH does once the user has answered its prompts.
+type delayedSOCKSLauncher struct{ delay time.Duration }
+
+func (l delayedSOCKSLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	var address string
+	for index, argument := range request.Args {
+		if argument == "-D" && index+1 < len(request.Args) {
+			address = request.Args[index+1]
+		}
+	}
+	process := &delayedSOCKSProcess{done: make(chan struct{})}
+	go func() {
+		select {
+		case <-time.After(l.delay):
+		case <-process.done:
+			return
+		}
+		listener, err := net.Listen("tcp4", address)
+		if err != nil {
+			return
+		}
+		go func() {
+			<-process.done
+			_ = listener.Close()
+		}()
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			_ = connection.Close()
+		}
+	}()
+	return process, nil
+}
+
+type delayedSOCKSProcess struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func (p *delayedSOCKSProcess) Wait() error {
+	<-p.done
+	return errors.New("signal: killed")
+}
+
+func (p *delayedSOCKSProcess) Signal(os.Signal) error { return nil }
+
+func (p *delayedSOCKSProcess) Kill() error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}

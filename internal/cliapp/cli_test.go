@@ -3,6 +3,7 @@ package cliapp_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,7 @@ import (
 	"time"
 
 	kamuiapp "github.com/narasaka/kamui/internal/app"
+	"github.com/narasaka/kamui/internal/askpass"
 	"github.com/narasaka/kamui/internal/cliapp"
 	"github.com/narasaka/kamui/internal/controller"
 	"github.com/narasaka/kamui/internal/mirror"
@@ -584,5 +586,275 @@ func (l *authenticationFailureLauncher) disconnect(t *testing.T) {
 	}
 	if err := process.Kill(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStatusJSONWithoutControllerReportsNoSessionsWithoutStartingOne(t *testing.T) {
+	t.Parallel()
+
+	application := kamuiapp.New(state.NewLayout(t.TempDir()), controllerStartForbidden{t: t})
+	var output, errorOutput bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &errorOutput})
+	if err := command.Run(context.Background(), []string{"kamui", "status", "--json"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "{\n  \"format\": 1,\n  \"sessions\": []\n}\n"; got != want {
+		t.Fatalf("status JSON = %q, want %q", got, want)
+	}
+}
+
+func TestStatusJSONReportsRunningSession(t *testing.T) {
+	t.Parallel()
+
+	application, _, _ := runningStatusApplication(t)
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+	if err := command.Run(context.Background(), []string{"kamui", "status", "--json", "reyna"}); err != nil {
+		t.Fatal(err)
+	}
+	var document struct {
+		Format   int `json:"format"`
+		Sessions []struct {
+			Destination string `json:"destination"`
+			State       string `json:"state"`
+		} `json:"sessions"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &document); err != nil {
+		t.Fatalf("decode status JSON %q: %v", output.String(), err)
+	}
+	if document.Format != 1 || len(document.Sessions) != 1 ||
+		document.Sessions[0].Destination != "reyna" || document.Sessions[0].State != "connected" {
+		t.Fatalf("status JSON = %s", output.String())
+	}
+}
+
+func TestPrimaryCommandNonInteractiveForbidsOpenSSHPrompts(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name      string
+		args      []string
+		wantBatch bool
+	}{
+		{name: "interactive", args: []string{"kamui", "reyna"}, wantBatch: false},
+		{name: "non-interactive", args: []string{"kamui", "--non-interactive", "reyna"}, wantBatch: true},
+		{name: "mirror non-interactive", args: []string{"kamui", "mirror", "--non-interactive", "reyna"}, wantBatch: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root, err := os.MkdirTemp("/tmp", "kamui-cli-batch-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			layout := state.NewLayout(root)
+			launcher := &testsupport.SSHLauncher{}
+			manager := session.NewManagerWithOptions(session.ManagerOptions{
+				Transport:        ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second},
+				MirrorDiscoverer: cliDiscoverer{},
+				MirrorInterval:   time.Hour,
+			})
+			t.Cleanup(func() { _ = manager.Close() })
+			server, err := controller.Start(context.Background(), layout, manager)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+			var output bytes.Buffer
+			command := cliapp.NewCommandWithApplication(kamuiapp.New(layout, nil), cliapp.Streams{Out: &output, ErrOut: &output})
+			if err := command.Run(context.Background(), test.args); err != nil {
+				t.Fatal(err)
+			}
+			batch := strings.Contains(strings.Join(launcher.LastArgs(), " "), "BatchMode=yes")
+			if batch != test.wantBatch {
+				t.Fatalf("OpenSSH args = %q, BatchMode=yes present %v, want %v", launcher.LastArgs(), batch, test.wantBatch)
+			}
+		})
+	}
+}
+
+type controllerStartForbidden struct{ t *testing.T }
+
+func (s controllerStartForbidden) Start(context.Context, state.Layout) error {
+	s.t.Error("observing status must not start a controller")
+	return errors.New("controller start forbidden")
+}
+
+func TestPrimaryCommandRelaysOpenSSHPromptsToTheRequester(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name         string
+		args         []string
+		answer       string
+		decline      bool
+		wantErr      bool
+		wantPrompted int
+	}{
+		{name: "correct passphrase", args: []string{"kamui", "reyna"}, answer: "open sesame", wantPrompted: 1},
+		{name: "wrong passphrase", args: []string{"kamui", "reyna"}, answer: "guess", wantErr: true, wantPrompted: 1},
+		{name: "declined", args: []string{"kamui", "reyna"}, decline: true, wantErr: true, wantPrompted: 1},
+		{name: "non-interactive", args: []string{"kamui", "--non-interactive", "reyna"}, answer: "open sesame", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root, err := os.MkdirTemp("/tmp", "kamui-cli-prompt-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			layout := state.NewLayout(root)
+			launcher := &testsupport.PromptingSSHLauncher{Prompt: "Enter passphrase for key '/k': ", Passphrase: "open sesame"}
+			manager := session.NewManagerWithOptions(session.ManagerOptions{
+				Transport:        ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second, AskpassProgram: "/usr/local/bin/kamui"},
+				MirrorDiscoverer: cliDiscoverer{},
+				MirrorInterval:   time.Hour,
+			})
+			t.Cleanup(func() { _ = manager.Close() })
+			server, err := controller.Start(context.Background(), layout, manager)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+			var prompts []askpass.Prompt
+			prompter := func(_ context.Context, prompt askpass.Prompt) (string, error) {
+				prompts = append(prompts, prompt)
+				if test.decline {
+					return "", askpass.ErrDeclined
+				}
+				return test.answer, nil
+			}
+			var output bytes.Buffer
+			command := cliapp.NewCommandWithApplication(kamuiapp.New(layout, nil), cliapp.Streams{Out: &output, ErrOut: &output, Prompter: prompter})
+			err = command.Run(context.Background(), test.args)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Run error = %v, want error %v; output %q", err, test.wantErr, output.String())
+			}
+			if len(prompts) != test.wantPrompted || launcher.Prompted() != test.wantPrompted {
+				t.Fatalf("requester saw %d prompts, OpenSSH asked %d times; want %d", len(prompts), launcher.Prompted(), test.wantPrompted)
+			}
+			if test.wantPrompted > 0 && prompts[0] != (askpass.Prompt{Text: "Enter passphrase for key '/k': ", Kind: askpass.Secret}) {
+				t.Fatalf("prompt = %#v", prompts[0])
+			}
+			if !test.wantErr && !strings.Contains(output.String(), "● connected") {
+				t.Fatalf("output = %q, want connected session", output.String())
+			}
+		})
+	}
+}
+
+func TestNonInteractiveConnectKeepsAgentForwardingWarning(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-cli-warning-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	launcher := &testsupport.SSHLauncher{}
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport: ssh.Transport{
+			SSHPath: "/usr/bin/true", Launcher: launcher, ReadinessTimeout: time.Second,
+			Inspector: agentForwardingInspector{},
+		},
+		MirrorDiscoverer: cliDiscoverer{},
+		MirrorInterval:   time.Hour,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	var output, errorOutput bytes.Buffer
+	command := cliapp.NewCommandWithApplication(kamuiapp.New(layout, nil), cliapp.Streams{Out: &output, ErrOut: &errorOutput})
+	if err := command.Run(context.Background(), []string{"kamui", "mirror", "--non-interactive", "reyna"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(errorOutput.String(), "WARNING: SSH agent forwarding is enabled for reyna") {
+		t.Fatalf("stderr = %q, want agent-forwarding warning", errorOutput.String())
+	}
+	if !strings.Contains(strings.Join(launcher.LastArgs(), " "), "BatchMode=yes") {
+		t.Fatalf("OpenSSH args = %q, want BatchMode=yes", launcher.LastArgs())
+	}
+}
+
+func TestMirrorCommandTreatsCommandNamesAsDestinations(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-cli-reserved-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:        ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second},
+		MirrorDiscoverer: cliDiscoverer{},
+		MirrorInterval:   time.Hour,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	application := kamuiapp.New(layout, nil)
+	for _, name := range []string{"status", "logs", "browsers"} {
+		var output bytes.Buffer
+		command := cliapp.NewCommandWithApplication(application, cliapp.Streams{Out: &output, ErrOut: &output})
+		if err := command.Run(context.Background(), []string{"kamui", "mirror", "--non-interactive", name}); err != nil {
+			t.Fatalf("mirror %s: %v: %s", name, err, output.String())
+		}
+		if _, err := application.Execute(context.Background(), kamuiapp.Request{Operation: kamuiapp.Status, Destination: name}); err != nil {
+			t.Fatalf("mirror %s did not create a session: %v", name, err)
+		}
+	}
+}
+
+type agentForwardingInspector struct{}
+
+func (agentForwardingInspector) AgentForwarding(context.Context, string, string) (bool, error) {
+	return true, nil
+}
+
+func TestConnectWithoutPromptRelayStillWorksWhenBrokerCannotStart(t *testing.T) {
+	t.Parallel()
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the directory permissions that block the prompt socket")
+	}
+
+	root, err := os.MkdirTemp("/tmp", "kamui-cli-nobroker-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport:        ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second, AskpassProgram: "/usr/local/bin/kamui"},
+		MirrorDiscoverer: cliDiscoverer{},
+		MirrorInterval:   time.Hour,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	// The controller's socket already exists; a read-only runtime directory
+	// prevents creating a prompt socket.
+	if err := os.Chmod(layout.Runtime, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(layout.Runtime, 0o700) })
+	prompter := func(context.Context, askpass.Prompt) (string, error) { return "", nil }
+	var output, errorOutput bytes.Buffer
+	command := cliapp.NewCommandWithApplication(kamuiapp.New(layout, nil), cliapp.Streams{Out: &output, ErrOut: &errorOutput, Prompter: prompter})
+	if err := command.Run(context.Background(), []string{"kamui", "reyna"}); err != nil {
+		t.Fatalf("connect: %v; stderr %q", err, errorOutput.String())
+	}
+	if !strings.Contains(errorOutput.String(), "NOTICE: OpenSSH prompts cannot be relayed") {
+		t.Fatalf("stderr = %q, want relay notice", errorOutput.String())
 	}
 }

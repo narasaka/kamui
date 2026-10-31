@@ -2,6 +2,9 @@ package controller_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"github.com/narasaka/kamui/internal/askpass"
 	"io"
 	"net"
 	"os"
@@ -336,4 +339,51 @@ func (p *controllerProcess) Kill() error {
 	var err error
 	p.once.Do(func() { close(p.done); err = p.listener.Close() })
 	return err
+}
+
+func TestClientReportsControllerResultWhenAnswerArrivesAfterAttemptEnded(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-late-answer-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	if err := layout.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.Token, []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", layout.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		connection, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer func() { _ = connection.Close() }()
+		var request map[string]any
+		_ = json.NewDecoder(connection).Decode(&request)
+		encoder := json.NewEncoder(connection)
+		_ = encoder.Encode(map[string]any{"prompt": map[string]string{"text": "Password:", "kind": "secret"}})
+		_ = encoder.Encode(map[string]any{"error": "OpenSSH SOCKS listener was not ready within 30s"})
+	}()
+
+	destination, err := session.ParseDestination("reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := controller.Client{Layout: layout, Prompter: func(context.Context, askpass.Prompt) (string, error) {
+		time.Sleep(50 * time.Millisecond)
+		return "too late", nil
+	}}
+	_, err = client.Execute(context.Background(), session.Command{Operation: session.Ensure, Destination: destination})
+	if got, want := fmt.Sprint(err), "OpenSSH SOCKS listener was not ready within 30s"; got != want {
+		t.Fatalf("Execute error = %q, want the controller's result %q", got, want)
+	}
 }

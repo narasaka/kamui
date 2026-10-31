@@ -1,6 +1,6 @@
 # ADR 0003: Supervise sessions in one user controller
 
-- Status: accepted
+- Status: accepted; prompt handling amended by ADR 0013
 - Date: 2026-09-11
 
 ## Context

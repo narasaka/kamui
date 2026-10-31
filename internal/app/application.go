@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/narasaka/kamui/internal/askpass"
 	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/config"
 	"github.com/narasaka/kamui/internal/controller"
@@ -49,7 +50,12 @@ type Request struct {
 	JSON         bool
 	IncludePorts []string
 	ExcludePorts []string
-	Diagnostics  io.Writer
+	// NonInteractive forbids OpenSSH prompts so a caller without a terminal
+	// receives a prompt failure instead of a hidden prompt.
+	NonInteractive bool
+	// Prompter answers OpenSSH prompts on the requester's terminal.
+	Prompter    askpass.Prompter
+	Diagnostics io.Writer
 }
 
 // Result is the observable command result.
@@ -167,25 +173,72 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		StopBrowserOnStop: stopBrowserOnStop,
 		LoopbackMode:      loopbackMode,
 		Unattended:        request.Operation == SSHHook,
+		NoPrompts:         request.NonInteractive,
 		EnableMirror:      request.Operation == Mirror || request.Operation == SSHHook,
 		PortPolicy:        portPolicy,
 	}
 	call := func() (session.Result, error) {
 		client := a.client
 		client.Diagnostics = request.Diagnostics
+		if !command.Unattended && !command.NoPrompts {
+			client.Prompter = request.Prompter
+		}
 		if request.Operation == SSHHook {
 			return session.Result{}, client.ExecuteAsync(ctx, command)
 		}
 		return client.Execute(ctx, command)
 	}
-	if err := a.ensureCompatibleController(ctx); err != nil {
-		return Result{}, err
+	// Status and stopping one session only observe or change the running
+	// controller. They never start or replace one, even if it changes between
+	// the identity probe and the request.
+	observes := request.Operation == Status || (request.Operation == Stop && !request.All)
+	if request.Operation == Status || request.Operation == Stop {
+		identity, running := a.runningController(ctx)
+		if !running {
+			return withoutController(destination, request)
+		}
+		if observes && identity != nil && !identitiesMatch(*identity, a.identity) {
+			return Result{}, errors.New("the running Kamui controller belongs to a different kamui build, " +
+				"such as one replaced by an upgrade; connect again to restart it, which ends its current sessions")
+		}
+	}
+	if !observes {
+		if err := a.ensureCompatibleController(ctx); err != nil {
+			return Result{}, err
+		}
 	}
 	result, err := call()
+	if observes && err != nil && controllerUnavailable(err) {
+		return withoutController(destination, request)
+	}
 	if err != nil {
 		return Result{}, err
 	}
 	return a.completeResult(destination, request.Operation, result)
+}
+
+// runningController reports whether any controller answers on the socket and,
+// when it authenticates, its identity. Status and stop use it so that
+// observing Kamui, such as polling from the menu bar app, never starts or
+// replaces a controller.
+func (a *Application) runningController(ctx context.Context) (*controller.Identity, bool) {
+	identity, err := a.client.Identity(ctx)
+	if err != nil {
+		return nil, !controllerUnavailable(err)
+	}
+	return &identity, true
+}
+
+// withoutController answers status and stop requests when no controller runs,
+// which means no sessions exist.
+func withoutController(destination session.Destination, request Request) (Result, error) {
+	if request.Operation == Status && destination.String() == "" {
+		return Result{Result: session.Result{Sessions: []session.SessionStatus{}}}, nil
+	}
+	if request.Operation == Stop && request.All {
+		return Result{}, nil
+	}
+	return Result{}, fmt.Errorf("no Kamui session for %s", destination)
 }
 
 func (a *Application) ensureCompatibleController(ctx context.Context) error {

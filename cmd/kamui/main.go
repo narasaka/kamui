@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"github.com/narasaka/kamui/internal/app"
+	"github.com/narasaka/kamui/internal/askpass"
 	"github.com/narasaka/kamui/internal/browser"
 	"github.com/narasaka/kamui/internal/cliapp"
 	"github.com/narasaka/kamui/internal/controller"
@@ -18,6 +19,11 @@ import (
 )
 
 func main() {
+	// OpenSSH runs SSH_ASKPASS with the prompt as its only argument. The
+	// controller sets the broker variables only for that purpose.
+	if os.Getenv(askpass.SocketEnv) != "" {
+		os.Exit(askpass.RunHelper(os.Args[1:], os.Getenv, os.Stdout))
+	}
 	if len(os.Args) >= 2 && os.Args[1] == "__controller" {
 		if err := runController(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
@@ -33,7 +39,9 @@ func main() {
 	application := app.New(layout, app.ProcessStarter{
 		Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr,
 	})
-	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr})
+	command := cliapp.NewCommandWithApplication(application, cliapp.Streams{
+		In: os.Stdin, Out: os.Stdout, ErrOut: os.Stderr, Prompter: askpass.Terminal(),
+	})
 	if err := command.Run(context.Background(), os.Args); err != nil {
 		cliapp.PrintError(os.Stderr, err)
 		os.Exit(1)
@@ -59,10 +67,14 @@ func runController(arguments []string) error {
 		return fmt.Errorf("open OpenSSH log: %w", err)
 	}
 	defer func() { _ = sshLogFile.Close() }()
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("find Kamui executable for OpenSSH prompts: %w", err)
+	}
 	manager := session.NewManagerWithOptions(session.ManagerOptions{
 		Transport: ssh.Transport{
 			Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr, BackgroundStderr: sshLogFile,
-			Inspector: ssh.SystemConfigInspector{},
+			Inspector: ssh.SystemConfigInspector{}, AskpassProgram: executable,
 		},
 		Browsers:       browser.NewCatalog(browser.DefaultAdapters(nil)),
 		ProfileRoot:    layout.Profiles,

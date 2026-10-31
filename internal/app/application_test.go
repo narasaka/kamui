@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/narasaka/kamui/internal/app"
+	"github.com/narasaka/kamui/internal/askpass"
 	"github.com/narasaka/kamui/internal/controller"
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/ssh"
@@ -124,7 +128,7 @@ func TestDoctorReportsAllLocalAndRemoteChecksWithoutStartingController(t *testin
 type failingStarter struct{ t *testing.T }
 
 func (s *failingStarter) Start(context.Context, state.Layout) error {
-	s.t.Error("controller must not start for print-ssh-config")
+	s.t.Error("controller must not start for this operation")
 	return nil
 }
 
@@ -524,4 +528,353 @@ func (s *inProcessStarter) close() {
 	if s.server != nil {
 		_ = s.server.Close()
 	}
+}
+
+func TestStatusAndStopDoNotStartMissingController(t *testing.T) {
+	t.Parallel()
+
+	application := app.New(state.NewLayout(t.TempDir()), &failingStarter{t: t})
+	result, err := application.Execute(context.Background(), app.Request{Operation: app.Status})
+	if err != nil {
+		t.Fatalf("status returned error: %v", err)
+	}
+	if result.Sessions == nil || len(result.Sessions) != 0 {
+		t.Fatalf("sessions = %#v, want empty list", result.Sessions)
+	}
+	if _, err := application.Execute(context.Background(), app.Request{Operation: app.Stop, All: true}); err != nil {
+		t.Fatalf("stop --all returned error: %v", err)
+	}
+	for _, operation := range []app.Operation{app.Status, app.Stop} {
+		_, err := application.Execute(context.Background(), app.Request{Operation: operation, Destination: "reyna"})
+		if got, want := fmt.Sprint(err), "no Kamui session for reyna"; got != want {
+			t.Fatalf("operation %d error = %q, want %q", operation, got, want)
+		}
+	}
+}
+
+func TestStatusAndStopReportControllerFromAnotherBuildWithoutReplacingIt(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-app-mismatch-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManager(ssh.Transport{Launcher: &testsupport.SSHLauncher{}, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	other := controller.Identity{Protocol: controller.ProtocolVersion, Build: "other-installed-build"}
+	server, err := controller.StartWithIdentity(context.Background(), layout, manager, other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+
+	application := app.New(layout, &failingStarter{t: t})
+	for _, request := range []app.Request{{Operation: app.Status}, {Operation: app.Stop, Destination: "reyna"}} {
+		_, err = application.Execute(context.Background(), request)
+		if err == nil || !strings.Contains(err.Error(), "different kamui build") {
+			t.Fatalf("operation %d error = %v, want different-build report", request.Operation, err)
+		}
+	}
+	identity, err := (controller.Client{Layout: layout}).Identity(context.Background())
+	if err != nil || identity.Build != other.Build {
+		t.Fatalf("controller after status = %#v, %v; want the other build still running", identity, err)
+	}
+}
+
+func TestUnansweredPromptIsCancelledWhenConnectionAttemptTimesOut(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-app-stalled-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport: ssh.Transport{
+			Launcher: stalledPromptLauncher{}, ReadinessTimeout: 200 * time.Millisecond,
+			PromptLimit: time.Second, AskpassProgram: "/usr/local/bin/kamui",
+		},
+		MirrorDiscoverer: staticDiscoverer{},
+		MirrorInterval:   time.Hour,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	application := app.New(layout, nil)
+
+	prompted := make(chan struct{})
+	cancelled := make(chan struct{})
+	prompter := func(ctx context.Context, _ askpass.Prompt) (string, error) {
+		close(prompted)
+		<-ctx.Done()
+		close(cancelled)
+		return "", ctx.Err()
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := application.Execute(context.Background(), app.Request{Operation: app.Mirror, Destination: "reyna", Prompter: prompter})
+		done <- err
+	}()
+	<-prompted
+	// The open prompt must not block status, such as the menu bar app's polling.
+	statusStarted := time.Now()
+	if _, err := application.Execute(context.Background(), app.Request{Operation: app.Status}); err != nil {
+		t.Fatalf("status while a prompt is open: %v", err)
+	}
+	if elapsed := time.Since(statusStarted); elapsed > 500*time.Millisecond {
+		t.Fatalf("status waited %s behind an open prompt", elapsed)
+	}
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "not ready") {
+			t.Fatalf("connect error = %v, want readiness timeout", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("connect stayed blocked on an unanswered prompt")
+	}
+	select {
+	case <-cancelled:
+	default:
+		t.Fatal("open prompt was not cancelled when the attempt ended")
+	}
+	statusDone := make(chan error, 1)
+	go func() {
+		_, err := application.Execute(context.Background(), app.Request{Operation: app.Status})
+		statusDone <- err
+	}()
+	select {
+	case err := <-statusDone:
+		if err != nil {
+			t.Fatalf("status after abandoned prompt: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("controller stopped answering status after an abandoned prompt")
+	}
+}
+
+// stalledPromptLauncher starts the askpass helper in the background, as
+// OpenSSH does, and never becomes ready.
+type stalledPromptLauncher struct{}
+
+func (stalledPromptLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	environment := map[string]string{}
+	for _, entry := range request.Env {
+		if name, value, ok := strings.Cut(entry, "="); ok {
+			environment[name] = value
+		}
+	}
+	go askpass.RunHelper([]string{"Enter passphrase for key '/k': "}, func(name string) string { return environment[name] }, io.Discard)
+	return &blockedProcess{done: make(chan struct{})}, nil
+}
+
+type blockedProcess struct {
+	done chan struct{}
+	once sync.Once
+}
+
+func (p *blockedProcess) Wait() error {
+	<-p.done
+	return errors.New("signal: killed")
+}
+
+func (p *blockedProcess) Signal(os.Signal) error { return nil }
+
+func (p *blockedProcess) Kill() error {
+	p.once.Do(func() { close(p.done) })
+	return nil
+}
+
+func TestStatusAndStopNeverReplaceControllerThatChangesAfterProbe(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		request app.Request
+		vanish  bool
+		wantErr string
+	}{
+		{name: "status after replacement", request: app.Request{Operation: app.Status}},
+		{name: "stop after replacement", request: app.Request{Operation: app.Stop, Destination: "reyna"}, wantErr: "no Kamui session for reyna"},
+		{name: "status after exit", request: app.Request{Operation: app.Status}, vanish: true},
+		{name: "stop after exit", request: app.Request{Operation: app.Stop, Destination: "reyna"}, vanish: true, wantErr: "no Kamui session for reyna"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root, err := os.MkdirTemp("/tmp", "kamui-app-race-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			layout := state.NewLayout(root)
+			fake := startChangingController(t, layout, test.vanish)
+
+			_, err = app.New(layout, &failingStarter{t: t}).Execute(context.Background(), test.request)
+			if got := fmt.Sprint(err); (test.wantErr == "" && err != nil) || (test.wantErr != "" && got != test.wantErr) {
+				t.Fatalf("error = %v, want %q", err, test.wantErr)
+			}
+			if fake.shutdowns() != 0 {
+				t.Fatalf("observing command asked the replacement controller to shut down %d times", fake.shutdowns())
+			}
+		})
+	}
+}
+
+// changingController answers its first identity probe with the caller's
+// build and every later probe with another build, as if a terminal using a
+// different kamui had replaced it. With vanish, it closes command requests
+// without answering, as if it had exited.
+type changingController struct {
+	mu       sync.Mutex
+	probes   int
+	shutdown int
+}
+
+func (c *changingController) shutdowns() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.shutdown
+}
+
+func startChangingController(t *testing.T, layout state.Layout, vanish bool) *changingController {
+	t.Helper()
+	if err := layout.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(layout.Token, []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("unix", layout.Socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	fake := &changingController{}
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go fake.serve(connection, vanish)
+		}
+	}()
+	return fake
+}
+
+func (c *changingController) serve(connection net.Conn, vanish bool) {
+	defer func() { _ = connection.Close() }()
+	var request struct {
+		Probe       bool   `json:"probe"`
+		Shutdown    bool   `json:"shutdown"`
+		Destination string `json:"destination"`
+	}
+	if err := json.NewDecoder(connection).Decode(&request); err != nil {
+		return
+	}
+	encoder := json.NewEncoder(connection)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch {
+	case request.Probe:
+		c.probes++
+		build := version.BuildIdentity()
+		if c.probes > 1 {
+			build = "replacement-from-another-build"
+		}
+		_ = encoder.Encode(map[string]any{"result": map[string]any{}, "identity": controller.Identity{Protocol: controller.ProtocolVersion, Build: build}})
+	case request.Shutdown:
+		c.shutdown++
+		_ = encoder.Encode(map[string]any{"result": map[string]any{}})
+	case vanish:
+	case request.Destination == "":
+		_ = encoder.Encode(map[string]any{"result": map[string]any{"sessions": []any{}}})
+	default:
+		_ = encoder.Encode(map[string]any{"error": "no Kamui session for " + request.Destination})
+	}
+}
+
+func TestOpenPromptDoesNotBlockOtherSessionsAndStopCancelsIt(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.MkdirTemp("/tmp", "kamui-app-concurrent-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(root) })
+	layout := state.NewLayout(root)
+	manager := session.NewManagerWithOptions(session.ManagerOptions{
+		Transport: ssh.Transport{
+			Launcher: &selectivePromptLauncher{}, ReadinessTimeout: 200 * time.Millisecond,
+			PromptLimit: time.Minute, AskpassProgram: "/usr/local/bin/kamui",
+		},
+		MirrorDiscoverer: staticDiscoverer{},
+		MirrorInterval:   time.Hour,
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+	server, err := controller.Start(context.Background(), layout, manager)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	application := app.New(layout, nil)
+	if _, err := application.Execute(context.Background(), app.Request{Operation: app.Mirror, Destination: "other"}); err != nil {
+		t.Fatal(err)
+	}
+
+	prompted := make(chan struct{})
+	prompter := func(ctx context.Context, _ askpass.Prompt) (string, error) {
+		close(prompted)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	waiting := make(chan error, 1)
+	go func() {
+		_, err := application.Execute(context.Background(), app.Request{Operation: app.Mirror, Destination: "reyna", Prompter: prompter})
+		waiting <- err
+	}()
+	<-prompted
+
+	quickly := func(name string, request app.Request) {
+		t.Helper()
+		started := time.Now()
+		if _, err := application.Execute(context.Background(), request); err != nil {
+			t.Fatalf("%s while a prompt is open: %v", name, err)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("%s waited %s behind an open prompt", name, elapsed)
+		}
+	}
+	quickly("stop another session", app.Request{Operation: app.Stop, Destination: "other"})
+	quickly("connect another destination", app.Request{Operation: app.Mirror, Destination: "third"})
+	quickly("stop the prompting destination", app.Request{Operation: app.Stop, Destination: "reyna"})
+	select {
+	case err := <-waiting:
+		if err == nil {
+			t.Fatal("cancelled connection attempt succeeded")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("stop did not cancel the connection attempt waiting for a prompt")
+	}
+	if _, err := application.Execute(context.Background(), app.Request{Operation: app.Status, Destination: "reyna"}); err == nil {
+		t.Fatal("cancelled destination has a session")
+	}
+}
+
+// selectivePromptLauncher stalls on a prompt when the transport relays
+// prompts and otherwise connects like testsupport.SSHLauncher.
+type selectivePromptLauncher struct{ testsupport.SSHLauncher }
+
+func (l *selectivePromptLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	for _, entry := range request.Env {
+		if strings.HasPrefix(entry, askpass.SocketEnv+"=") {
+			return stalledPromptLauncher{}.Start(request)
+		}
+	}
+	return l.SSHLauncher.Start(request)
 }
