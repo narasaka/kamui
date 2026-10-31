@@ -1,0 +1,25 @@
+{
+  "format": 1,
+  "sessions": [
+    {
+      "destination": "reyna",
+      "state": "authentication-required",
+      "lastError": "SSH authentication failed for reyna",
+      "mirror": {
+        "enabled": true,
+        "mirroredPorts": [
+          3000,
+          5173
+        ],
+        "excludedPorts": [],
+        "conflicts": [
+          {
+            "port": 5432,
+            "error": "address already in use"
+          }
+        ],
+        "lastError": "discovery stalled"
+      }
+    }
+  ]
+}

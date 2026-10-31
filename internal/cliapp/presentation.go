@@ -63,7 +63,8 @@ func (p *connectionProgress) start(destination string) error {
 	if _, err := fmt.Fprintf(p.writer, "%s connecting to %s...\r", connectionFrames[0], destination); err != nil {
 		return err
 	}
-	p.done = make(chan struct{})
+	done := make(chan struct{})
+	p.done = done
 	p.err = make(chan error, 1)
 	p.wait.Add(1)
 	go func() {
@@ -77,7 +78,7 @@ func (p *connectionProgress) start(destination string) error {
 		frame := 1
 		for {
 			select {
-			case <-p.done:
+			case <-done:
 				return
 			case <-ticker.C:
 				if _, err := fmt.Fprintf(p.writer, "\r\x1b[2K%s connecting to %s...\r", connectionFrames[frame], destination); err != nil {
@@ -91,11 +92,13 @@ func (p *connectionProgress) start(destination string) error {
 	return nil
 }
 
+// stop clears the progress line. Later calls do nothing.
 func (p *connectionProgress) stop() error {
-	if !p.visible {
+	if !p.visible || p.done == nil {
 		return nil
 	}
 	close(p.done)
+	p.done = nil
 	p.wait.Wait()
 	var animationErr error
 	select {

@@ -2,7 +2,10 @@ package cliapp
 
 import (
 	"bytes"
+	"errors"
 	"net/netip"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -86,5 +89,53 @@ func TestPrintStatusesShowsBrowserAndProxyForBrowserSessions(t *testing.T) {
 		"reyna        ● connected  firefox  127.0.0.1:51747\n"
 	if got := output.String(); got != want {
 		t.Fatalf("status output = %q, want %q", got, want)
+	}
+}
+
+func TestPrintStatusJSONUsesStableFieldNames(t *testing.T) {
+	t.Parallel()
+
+	destination, err := session.ParseDestination("reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	statuses := []session.SessionStatus{
+		{
+			Destination: destination,
+			State:       session.SessionAuthenticationRequired,
+			LastError:   errors.New("SSH authentication failed for reyna"),
+			Proxy:       netip.MustParseAddrPort("127.0.0.1:51747"),
+			Mirror: mirror.Status{
+				Enabled:         true,
+				MirroredPorts:   []uint16{3000, 5173},
+				ConflictedPorts: []mirror.Conflict{{Port: 5432, Error: "address already in use"}},
+				LastError:       errors.New("discovery stalled"),
+			},
+		},
+	}
+
+	var output bytes.Buffer
+	if err := printStatusJSON(&output, statuses); err != nil {
+		t.Fatal(err)
+	}
+	// The menu bar app's decoder tests read the same file.
+	want, err := os.ReadFile(filepath.Join("testdata", "status.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != string(want) {
+		t.Fatalf("status JSON = %s, want %s", got, want)
+	}
+}
+
+func TestPrintStatusJSONReportsNoSessionsAsEmptyList(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	if err := printStatusJSON(&output, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "{\n  \"format\": 1,\n  \"sessions\": []\n}\n"; got != want {
+		t.Fatalf("status JSON = %q, want %q", got, want)
 	}
 }
