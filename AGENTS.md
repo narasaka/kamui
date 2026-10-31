@@ -24,6 +24,9 @@ go vet ./...
 go test -race ./...
 ```
 
-`make check` runs the equivalent repository checks.
+`make check` runs the equivalent repository checks. When changing `macos/`,
+`kamui status --json`, or `--non-interactive`, also run `make check-macos-app`.
+The menu bar app depends only on the CLI's public contract, never on the
+controller socket.
 
 Use `scope: description` for commit subjects.

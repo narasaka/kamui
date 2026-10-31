@@ -153,6 +153,51 @@ kamui stop foo
 start project services. If a remote service stops, Kamui releases its local
 port after the next discovery pass.
 
+## Menu bar app
+
+On macOS 13 or later, the Kamui menu bar app shows your sessions and their
+mirrored ports without a terminal:
+
+```sh
+brew install --cask narasaka/tap/kamui-app
+```
+
+The cask also installs the `kamui` formula. The app runs that `kamui`
+executable and does not contain its own copy. From the menu you can:
+
+- see each session's state, mirrored ports, ports held elsewhere, and errors;
+- open a mirrored port, such as `http://localhost:3000`, in your browser;
+- connect to a `Host` alias from `~/.ssh/config` or any other SSH destination;
+- stop one session or all sessions;
+- start the app at login.
+
+The app never answers OpenSSH prompts itself. When a destination needs a
+passphrase, a host-key decision, or another prompt, the app offers **Connect
+in Terminal**, which runs `kamui mirror SSH_DESTINATION` in your default
+terminal. Kamui relays OpenSSH's prompts to that terminal. Sessions belong to
+the background controller, so quitting the app leaves them running.
+
+Port discovery opens its own OpenSSH connection that cannot prompt. Mirroring
+therefore needs authentication that works without a prompt once you have
+connected: an ssh-agent identity (for example with `AddKeysToAgent yes`), a key
+without a passphrase, or a `ControlMaster` in your SSH configuration. Hosts
+that ask for a password or second factor on every connection show a discovery
+error instead of mirrored ports.
+
+The app looks for `kamui` on your login shell's `PATH` and in common
+installation directories, and shows the one it uses under **kamui
+Executable**. If several copies are installed, the app and your terminal must
+use the same one; otherwise each replaces the other's controller and drops its
+sessions. After an upgrade, or when the app's copy differs from the running
+controller, the menu reports the mismatch instead of restarting the
+controller. Connecting again restarts it and ends its other sessions.
+
+macOS attributes connections made by sessions that the app starts to the app.
+The first connection to a host on your local network may therefore ask
+whether Kamui may access the local network. If you deny it, those sessions
+cannot reach local-network hosts until you allow Kamui in System Settings >
+Privacy & Security > Local Network.
+
 ## Dedicated browser mode
 
 The dedicated browser proxy remains available as a narrower alternative:
@@ -205,7 +250,7 @@ The primary command accepts exactly one OpenSSH destination and enables TCP
 mirroring:
 
 ```sh
-kamui SSH_DESTINATION [--include-port PORT_OR_RANGE] [--exclude-port PORT_OR_RANGE]
+kamui SSH_DESTINATION [--include-port PORT_OR_RANGE] [--exclude-port PORT_OR_RANGE] [--non-interactive]
 ```
 
 `kamui mirror SSH_DESTINATION` remains as a compatibility spelling for the same
@@ -223,7 +268,7 @@ your normal OpenSSH configuration.
 Supporting commands are:
 
 ```sh
-kamui status [SSH_DESTINATION]
+kamui status [--json] [SSH_DESTINATION]
 kamui stop SSH_DESTINATION
 kamui stop --all
 kamui open SSH_DESTINATION [URL ...]
@@ -278,8 +323,8 @@ foo` closes the proxy, SSH transport, and mirrored listeners.
 
 A dropped SSH connection breaks current TCP streams and WebSockets. New
 connections work after a successful bounded reconnect. If a reconnect needs
-authentication, rerun `kamui SSH_DESTINATION` in a terminal so OpenSSH can
-prompt you.
+authentication, rerun `kamui SSH_DESTINATION` in a terminal so Kamui can relay
+OpenSSH's prompts to you.
 
 ## Supported platforms
 
@@ -333,6 +378,14 @@ The module path is `github.com/narasaka/kamui`. Run the repository checks with:
 gofmt -w .
 go vet ./...
 go test -race ./...
+```
+
+The menu bar app is a Swift package in `macos/`. Test it and build an
+ad-hoc-signed universal `dist/Kamui.app` with:
+
+```sh
+make check-macos-app
+make macos-app
 ```
 
 Commit subjects use the `scope: description` form from
