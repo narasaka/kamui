@@ -57,11 +57,27 @@ func TestCaskTemplateMatchesMenuBarAppBundle(t *testing.T) {
 	if !strings.Contains(infoPlist, "<string>"+bundleID+"</string>") {
 		t.Fatalf("Info.plist does not use bundle identifier %s", bundleID)
 	}
+	if !strings.Contains(infoPlist, "<key>CFBundleIconFile</key>\n\t<string>AppIcon</string>") ||
+		!strings.Contains(buildScript, `"${app}/Contents/Resources/AppIcon.icns"`) {
+		t.Fatal("app bundle does not ship and declare AppIcon.icns")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(mustGetwd(t)), "macos", "Resources", "AppIcon.icns")); err != nil {
+		t.Fatalf("app icon is missing: %v", err)
+	}
 	for _, want := range []string{`app "Kamui.app"`, `quit: "` + bundleID + `"`, bundleID + `.plist"`, `depends_on formula: "narasaka/tap/kamui"`} {
 		if !strings.Contains(cask, want) {
 			t.Fatalf("cask template missing %q", want)
 		}
 	}
+}
+
+func mustGetwd(t *testing.T) string {
+	t.Helper()
+	directory, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return directory
 }
 
 func readRepositoryFile(t *testing.T, elements ...string) string {

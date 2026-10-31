@@ -8,6 +8,8 @@
 	<string>Kamui</string>
 	<key>CFBundleExecutable</key>
 	<string>Kamui</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleIdentifier</key>
 	<string>io.github.narasaka.kamui</string>
 	<key>CFBundleInfoDictionaryVersion</key>

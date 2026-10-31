@@ -39,6 +39,7 @@ app="${output_root}/Kamui.app"
 rm -rf "$app"
 mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
 cp "$binary" "${app}/Contents/MacOS/Kamui"
+cp "${package_root}/Resources/AppIcon.icns" "${app}/Contents/Resources/AppIcon.icns"
 sed "s/KAMUI_VERSION/${version}/g" "${package_root}/Resources/Info.plist" > "${app}/Contents/Info.plist"
 plutil -lint "${app}/Contents/Info.plist" >/dev/null
 

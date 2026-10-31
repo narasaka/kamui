@@ -388,5 +388,8 @@ make check-macos-app
 make macos-app
 ```
 
+The app icon is `macos/Resources/AppIcon.icns`. The menu bar icon is drawn at
+runtime from the same vortex geometry in `VortexGlyph.swift`.
+
 Commit subjects use the `scope: description` form from
 [Scoped Commits](https://scopedcommits.com/).
