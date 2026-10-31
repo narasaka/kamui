@@ -6,6 +6,8 @@ PLAN.md
 /kamui
 *.test
 *.prof
+/macos/.build/
+/macos/.swiftpm/
 
 # Local development state
 .DS_Store
