@@ -28,6 +28,11 @@ host-key decision, or a second factor, the app offers **Connect in Terminal**.
 That runs `kamui mirror foo` in your default terminal, and Kamui relays
 OpenSSH's prompts there.
 
+A Tailscale SSH check doesn't need a terminal. When the host asks for one, the
+app opens its "To authenticate, visit" link in your browser while the
+connection waits, as long as the link uses HTTPS. Kamui waits up to 30 seconds
+for you to sign in.
+
 Mirroring also needs SSH authentication that works without a prompt after that
 first connection, because port discovery uses its own connection. An ssh-agent
 key covers most setups; see [reconnecting](how-it-works.md#reconnecting).

@@ -110,7 +110,10 @@ final class AppModel: ObservableObject {
         Task {
             defer { pending.remove(destination) }
             do {
-                let warnings = try await client.connect(destination)
+                let warnings = try await client.connect(destination) { url in
+                    // A Tailscale SSH check waits until the user signs in.
+                    Task { @MainActor in NSWorkspace.shared.open(url) }
+                }
                 if !warnings.isEmpty {
                     showDetails(title: "Connected to \(destination)", detail: warnings.joined(separator: "\n"))
                 }
