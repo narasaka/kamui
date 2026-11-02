@@ -168,5 +168,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected job to pass
-        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        # always() keeps this step from being skipped after a cancellation, which
+        # would otherwise make the implicit success() check false.
+        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
         run: exit 1

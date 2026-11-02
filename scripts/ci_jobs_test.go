@@ -87,7 +87,7 @@ func TestCIWorkflowSelectsJobsFromThePullRequestDiff(t *testing.T) {
 		"            git diff --name-only --no-renames HEAD^1 HEAD | scripts/ci-jobs.sh\n",
 		"            scripts/ci-jobs.sh --all\n",
 		"    if: always()\n    needs: [changes,",
-		"        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')\n        run: exit 1\n",
+		"        if: always() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))\n        run: exit 1\n",
 	} {
 		if !strings.Contains(workflow, want) {
 			t.Fatalf("ci.yml no longer contains %q", strings.TrimSpace(want))
