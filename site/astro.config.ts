@@ -10,7 +10,7 @@ const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 // https://astro.build/config
 export default defineConfig({
   site: "https://kamui.narasaka.dev",
-  // Pages build to docs/cli.html and so on; vercel.json serves them at /docs/cli.
+  // Pages build to docs/cli.html and so on; Workers static assets serve them at /docs/cli.
   trailingSlash: "never",
   // Compression drops the space between text and an inline tag on the next line.
   compressHTML: false,

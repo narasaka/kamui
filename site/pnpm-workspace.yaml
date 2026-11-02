@@ -1,5 +1,6 @@
 # Only install releases that have been public for two weeks.
 minimumReleaseAge: 20160
-onlyBuiltDependencies:
-  - esbuild
-  - sharp
+allowBuilds:
+  esbuild: true
+  sharp: true
+  workerd: true

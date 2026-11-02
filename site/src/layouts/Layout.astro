@@ -12,7 +12,7 @@ const {
   title = "kamui",
   description = "Use a remote machine's localhost from your laptop. Kamui mirrors a dev box's ports over the SSH you already use.",
 } = Astro.props;
-// Pages build to .html files that vercel.json serves without the extension.
+// Pages build to .html files that Workers static assets serve without the extension.
 const path = Astro.url.pathname.replace(/(\/index)?\.html$/, "") || "/";
 const url = new URL(path, Astro.site).href;
 const image = new URL("/icon-512.png", Astro.site).href;
