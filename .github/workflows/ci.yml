@@ -10,7 +10,28 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      jobs: ${{ steps.select.outputs.jobs }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - name: Select jobs for the changed paths
+        id: select
+        shell: bash
+        run: |
+          # Pull requests check out a merge commit whose first parent is the base branch.
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            git diff --name-only --no-renames HEAD^1 HEAD | scripts/ci-jobs.sh
+          else
+            scripts/ci-jobs.sh --all
+          fi >> "$GITHUB_OUTPUT"
+
   format:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'go')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,6 +43,8 @@ jobs:
         run: make check-format
 
   lint:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'go')
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
@@ -38,6 +61,8 @@ jobs:
           version-file: .golangci-lint-version
 
   test:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'go')
     strategy:
       matrix:
         os: [macos-latest, ubuntu-latest]
@@ -79,6 +104,8 @@ jobs:
         run: pnpm build
 
   macos-app:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'macos-app')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -88,6 +115,8 @@ jobs:
         run: KAMUI_OUTPUT_ROOT="$RUNNER_TEMP/kamui-app" scripts/build-macos-app.sh 0.0.0
 
   browser-smoke:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'browser-smoke')
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -108,6 +137,8 @@ jobs:
         run: go test -race ./integration -run 'TestInstalledBrowsersUseKamuiProxy/(chrome|brave|firefox)$|TestChrome' -count=1 -v
 
   linux-browser-smoke:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'browser-smoke')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -129,3 +160,13 @@ jobs:
           KAMUI_BROWSER_TESTS: "1"
           KAMUI_REQUIRED_BROWSERS: "chrome,firefox"
         run: go test -race ./integration -run 'TestNativeLinuxBrowsersUseKamuiProxy/(chrome|firefox)$|TestRemoteListenerDiscoveryWithDisposableOpenSSHServer' -count=1 -v
+
+  ci-passed:
+    name: CI passed
+    if: always()
+    needs: [changes, format, lint, test, macos-app, browser-smoke, linux-browser-smoke]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every selected job to pass
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

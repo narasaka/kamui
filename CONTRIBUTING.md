@@ -5,6 +5,11 @@ runs the repository-pinned golangci-lint release, runs `go vet`, and runs the
 test suite with the race detector. Tests describe observable behavior through
 package interfaces and mock only operating-system or external-process seams.
 
+On pull requests, CI runs only the jobs whose paths changed;
+`scripts/ci-jobs.sh` maps paths to jobs. A change to a workflow, to that
+script, or to a path no filter covers runs every job. Pushes to `main` always
+run every job.
+
 Normal commit subjects use Scoped Commits:
 
 ```text
