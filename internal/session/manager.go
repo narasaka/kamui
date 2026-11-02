@@ -744,14 +744,15 @@ func (m *Manager) monitor(managed *managedSession) {
 	}
 }
 
-// probe closes a connected transport that no longer answers, so the monitor
-// replaces it now instead of after OpenSSH's server-alive limit.
+// probe closes a connected transport that no longer answers, or whose local
+// SOCKS listener fails, so the monitor replaces it now instead of after
+// OpenSSH's server-alive limit.
 func (m *Manager) probe(managed *managedSession) {
 	managed.mu.RLock()
 	connection := managed.connection
 	managed.mu.RUnlock()
 	err := connection.Probe(managed.ctx, m.probeTimeout)
-	if !errors.Is(err, ssh.ErrUnresponsive) {
+	if err == nil || managed.ctx.Err() != nil {
 		return
 	}
 	m.logger.Warn("Kamui session lifecycle", "event", "ssh_unresponsive", "session_key", managed.destination.Key())

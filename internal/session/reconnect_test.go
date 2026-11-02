@@ -165,6 +165,20 @@ func TestManagerBackoffRestartsAfterForegroundReconnect(t *testing.T) {
 	waitForState(t, manager, destination, session.SessionConnected, func() bool { return launcher.starts() == 4 })
 }
 
+func TestManagerWakeReplacesTransportWhoseProbeFails(t *testing.T) {
+	t.Parallel()
+
+	// managerLauncher closes every SOCKS connection before the greeting, like
+	// an OpenSSH client whose listener is broken.
+	launcher := &managerLauncher{}
+	manager := session.NewManager(ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second})
+	t.Cleanup(func() { _ = manager.Close() })
+	destination := ensureScripted(t, manager)
+
+	manager.Wake("test")
+	waitForState(t, manager, destination, session.SessionConnected, func() bool { return launcher.startCount() == 2 })
+}
+
 func scriptedManager(t *testing.T, launcher *scriptedLauncher, options session.ManagerOptions) *session.Manager {
 	t.Helper()
 	options.Transport = ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}

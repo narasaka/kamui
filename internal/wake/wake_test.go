@@ -89,12 +89,15 @@ func TestWatcherNotifiesWhenAddressesChange(t *testing.T) {
 	t.Parallel()
 
 	var mu sync.Mutex
+	var first sync.Once
+	observed := make(chan struct{})
 	current := []net.Addr{&net.IPNet{IP: net.ParseIP("192.168.1.20"), Mask: net.CIDRMask(24, 32)}}
 	watcher := Watcher{
 		Interval: 10 * time.Millisecond,
 		Addresses: func() ([]net.Addr, error) {
 			mu.Lock()
 			defer mu.Unlock()
+			first.Do(func() { close(observed) })
 			return current, nil
 		},
 	}
@@ -105,7 +108,7 @@ func TestWatcherNotifiesWhenAddressesChange(t *testing.T) {
 		watcher.Run(ctx, func(reason Reason) { reasons <- reason })
 		close(done)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	<-observed
 	mu.Lock()
 	current = []net.Addr{&net.IPNet{IP: net.ParseIP("10.0.0.7"), Mask: net.CIDRMask(24, 32)}}
 	mu.Unlock()
