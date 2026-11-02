@@ -10,11 +10,17 @@ final class AppModel: ObservableObject {
 
     @Published private(set) var sessions: [Session] = []
     @Published private(set) var pending: Set<String> = []
+    /// OpenSSH notices, such as "Confirm user presence for key", shown while
+    /// a connection waits.
+    @Published private(set) var notices: [String: String] = [:]
     @Published private(set) var hosts: [String] = []
     @Published private(set) var problem: String?
     @Published private(set) var executable: URL?
     @Published private(set) var launchesAtLogin = SMAppService.mainApp.status == .enabled
 
+    /// Connections the user stopped while they were starting, whose failure
+    /// is expected rather than reported.
+    private var stopping: Set<String> = []
     private var environment: [String: String] = ProcessInfo.processInfo.environment
     private var refreshing = false
     private var poller: Task<Void, Never>?
@@ -44,6 +50,16 @@ final class AppModel: ObservableObject {
         UserDefaults.standard.string(forKey: Self.executableOverrideKey) != nil
     }
 
+    /// The kamui inside this app, when the app runs from a bundle.
+    let bundledExecutable: URL? = {
+        let url = ExecutableLocator.bundledExecutable(in: Bundle.main.bundleURL)
+        return FileManager.default.isExecutableFile(atPath: url.path) ? url : nil
+    }()
+
+    var usesBundledExecutable: Bool {
+        executable != nil && executable == bundledExecutable
+    }
+
     func resolveExecutable() async {
         let locator = ExecutableLocator()
         environment = await locator.environment(base: ProcessInfo.processInfo.environment)
@@ -51,8 +67,15 @@ final class AppModel: ObservableObject {
         reloadHosts()
     }
 
+    /// Finds kamui again on every refresh, so that the app follows a CLI the
+    /// user installs or removes and keeps using the same build as the
+    /// terminal.
     private func locateExecutable() {
-        let located = ExecutableLocator().locate(override: UserDefaults.standard.string(forKey: Self.executableOverrideKey), environment: environment)
+        let located = ExecutableLocator().locate(
+            override: UserDefaults.standard.string(forKey: Self.executableOverrideKey),
+            environment: environment,
+            bundled: bundledExecutable
+        )
         if located != executable {
             executable = located
         }
@@ -74,9 +97,7 @@ final class AppModel: ObservableObject {
         if loginStatus != launchesAtLogin {
             launchesAtLogin = loginStatus
         }
-        if executable == nil {
-            locateExecutable()
-        }
+        locateExecutable()
         guard let client else {
             update(sessions: [], problem: KamuiError.executableNotFound.localizedDescription)
             return
@@ -106,20 +127,43 @@ final class AppModel: ObservableObject {
         } catch {
             return presentError(error)
         }
+        guard !pending.contains(destination) else { return }
         pending.insert(destination)
+        notices[destination] = nil
+        let prompts = SSHPromptHandler(
+            answer: { prompt in
+                let reply = await PromptPanel.ask(prompt, destination: destination)
+                if case .decline = reply, prompt.kind != .confirm, !Task.isCancelled {
+                    // Cancel means stop connecting. Stopping first ends the
+                    // attempt, so OpenSSH never tries an empty answer and
+                    // asks again.
+                    await self.stopAndWait(destination)
+                }
+                return reply
+            },
+            notice: { text in Task { @MainActor in self.notices[destination] = text } }
+        )
         Task {
-            defer { pending.remove(destination) }
+            defer {
+                pending.remove(destination)
+                notices[destination] = nil
+                stopping.remove(destination)
+            }
             do {
-                let warnings = try await client.connect(destination) { url in
+                let warnings = try await client.connect(destination, prompts: prompts) { url in
                     // A Tailscale SSH check waits until the user signs in.
                     Task { @MainActor in self.openSignIn(url, for: destination) }
                 }
-                if !warnings.isEmpty {
+                if stopping.contains(destination) {
+                    // Stop was requested before this connection reached the
+                    // controller, so it had nothing to stop then.
+                    try? await client.stop(destination)
+                } else if !warnings.isEmpty {
                     showDetails(title: "Connected to \(destination)", detail: warnings.joined(separator: "\n"))
                 }
-            } catch {
-                offerTerminal(destination: destination, title: "Could not connect to \(destination)", detail: error.localizedDescription)
-            }
+            } catch where !stopping.contains(destination) {
+                showDetails(title: "Could not connect to \(destination)", detail: error.localizedDescription)
+            } catch {}
             await refresh()
         }
     }
@@ -141,19 +185,28 @@ final class AppModel: ObservableObject {
     }
 
     func stop(_ destination: String) {
+        Task { await stopAndWait(destination) }
+    }
+
+    func stopAndWait(_ destination: String) async {
         guard let client else { return }
-        Task {
-            do {
-                try await client.stop(destination)
-            } catch {
-                presentError(error)
-            }
-            await refresh()
+        if pending.contains(destination) {
+            stopping.insert(destination)
         }
+        do {
+            try await client.stop(destination)
+        } catch where stopping.contains(destination) {
+            // The connection has not reached the controller yet; connect
+            // stops it when it finishes.
+        } catch {
+            presentError(error)
+        }
+        await refresh()
     }
 
     func stopAll() {
         guard let client else { return }
+        stopping.formUnion(pending)
         Task {
             do {
                 try await client.stopAll()
@@ -186,27 +239,24 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func openInTerminal(_ destination: String) {
-        guard let executable else { return presentError(KamuiError.executableNotFound) }
-        do {
-            let directory = FileManager.default.temporaryDirectory.appendingPathComponent("kamui-terminal", isDirectory: true)
-            let script = try TerminalHandoff.writeScript(executable: executable, destination: destination, directory: directory)
-            NSWorkspace.shared.open(script)
-        } catch {
-            presentError(error)
-        }
-    }
-
     func chooseExecutable() {
         let panel = NSOpenPanel()
         panel.title = "Choose the kamui executable"
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.showsHiddenFiles = true
+        panel.treatsFilePackagesAsDirectories = true
         panel.directoryURL = URL(fileURLWithPath: "/opt/homebrew/bin")
         NSApp.activate(ignoringOtherApps: true)
         guard panel.runModal() == .OK, let url = panel.url else { return }
         UserDefaults.standard.set(url.path, forKey: Self.executableOverrideKey)
+        locateExecutable()
+        Task { await refresh() }
+    }
+
+    func useBundledExecutable() {
+        guard let bundledExecutable else { return }
+        UserDefaults.standard.set(bundledExecutable.path, forKey: Self.executableOverrideKey)
         locateExecutable()
         Task { await refresh() }
     }
@@ -236,18 +286,6 @@ final class AppModel: ObservableObject {
         alert.informativeText = detail
         NSApp.activate(ignoringOtherApps: true)
         alert.runModal()
-    }
-
-    private func offerTerminal(destination: String, title: String, detail: String) {
-        let alert = NSAlert()
-        alert.messageText = title
-        alert.informativeText = detail + "\n\nIf OpenSSH needs a passphrase, host-key confirmation, or another prompt, connect in a terminal, where kamui asks for it."
-        alert.addButton(withTitle: "Connect in Terminal")
-        alert.addButton(withTitle: "Cancel")
-        NSApp.activate(ignoringOtherApps: true)
-        if alert.runModal() == .alertFirstButtonReturn {
-            openInTerminal(destination)
-        }
     }
 
     private func presentError(_ error: Error) {

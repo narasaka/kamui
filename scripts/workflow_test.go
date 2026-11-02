@@ -71,6 +71,40 @@ func TestCaskTemplateMatchesMenuBarAppBundle(t *testing.T) {
 	}
 }
 
+// The app's bundled kamui must have the same build identity as the release's
+// formula and binaries, or the two would replace each other's controller.
+func TestMenuBarAppBundlesCLIWithReleaseBuildIdentity(t *testing.T) {
+	buildScript := readRepositoryFile(t, "scripts", "build-macos-app.sh")
+	packageScript := readRepositoryFile(t, "scripts", "package.sh")
+	workflow := readRepositoryFile(t, ".github", "workflows", "release.yml")
+
+	for _, want := range []string{
+		`build_date="${KAMUI_BUILD_DATE:-unknown}"`,
+		"version.Version=${version} -X github.com/narasaka/kamui/internal/version.Commit=${commit} -X github.com/narasaka/kamui/internal/version.BuildDate=${build_date}",
+	} {
+		if !strings.Contains(buildScript, want) || !strings.Contains(packageScript, want) {
+			t.Fatalf("build-macos-app.sh and package.sh do not both contain %q", want)
+		}
+	}
+	if !strings.Contains(buildScript, `"${app}/Contents/Helpers/kamui"`) {
+		t.Fatal("build-macos-app.sh does not bundle kamui in Contents/Helpers")
+	}
+	var appStep string
+	for _, step := range strings.Split(workflow, "\n      - ")[1:] {
+		if strings.Contains(step, "build-macos-app.sh") {
+			appStep = step
+		}
+	}
+	for _, want := range []string{
+		"KAMUI_BUILD_COMMIT: ${{ steps.release.outputs.commit }}",
+		"KAMUI_BUILD_DATE: ${{ steps.release.outputs.build_date }}",
+	} {
+		if !strings.Contains(appStep, want) {
+			t.Fatalf("release workflow's app build step lacks %q", want)
+		}
+	}
+}
+
 func mustGetwd(t *testing.T) string {
 	t.Helper()
 	directory, err := os.Getwd()

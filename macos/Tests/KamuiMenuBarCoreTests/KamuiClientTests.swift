@@ -21,10 +21,10 @@ final class FakeRunner: CommandRunning, @unchecked Sendable {
         lock.withLock { recorded }
     }
 
-    func run(_ executable: URL, arguments: [String], environment: [String: String], timeout: Duration, onStandardErrorLine: StandardErrorLineHandler?) async throws -> CommandResult {
+    func run(_ executable: URL, arguments: [String], environment: [String: String], timeout: Duration, io: CommandIO) async throws -> CommandResult {
         lock.withLock { recorded.append(Invocation(executable: executable.path, arguments: arguments, environment: environment)) }
         let result = respond(arguments)
-        if let onStandardErrorLine {
+        if let onStandardErrorLine = io.onStandardErrorLine {
             result.standardError.split(separator: "\n").forEach { onStandardErrorLine(String($0)) }
         }
         return result
@@ -61,12 +61,14 @@ final class KamuiClientTests: XCTestCase {
 
         _ = try await client.connect(" nathan@192.168.1.50 ")
         _ = try await client.connect("status")
+        _ = try await client.connect("reyna", prompts: SSHPromptHandler { _ in .decline })
         try await client.stop("nathan@192.168.1.50")
         try await client.stopAll()
 
         XCTAssertEqual(runner.invocations.map(\.arguments), [
             ["mirror", "--non-interactive", "nathan@192.168.1.50"],
             ["mirror", "--non-interactive", "status"],
+            ["mirror", "--json-prompts", "reyna"],
             ["stop", "nathan@192.168.1.50"],
             ["stop", "--all"],
         ])
@@ -96,7 +98,7 @@ final class KamuiClientTests: XCTestCase {
         let client = KamuiClient(executable: executable, environment: [:], runner: runner)
         let opened = Collector<URL>()
 
-        _ = try? await client.connect("reyna") { opened.append($0) }
+        _ = try? await client.connect("reyna", onSignInURL: { opened.append($0) })
 
         XCTAssertEqual(opened.values.map(\.absoluteString), [
             "https://login.tailscale.com/a/example",
@@ -215,6 +217,21 @@ final class ExecutableLocatorTests: XCTestCase {
         XCTAssertNil(locator.locate(override: "/missing/kamui", environment: environment))
         XCTAssertEqual(locator.locate(override: nil, environment: environment)?.path, "/Users/n/go/bin/kamui")
         XCTAssertEqual(locator.locate(override: nil, environment: ["HOME": "/Users/n"])?.path, "/opt/homebrew/bin/kamui")
+    }
+
+    func testFallsBackToBundledCopyOnlyWithoutAnInstalledCLI() {
+        let bundled = ExecutableLocator.bundledExecutable(in: URL(fileURLWithPath: "/Applications/Kamui.app"))
+        XCTAssertEqual(bundled.path, "/Applications/Kamui.app/Contents/Helpers/kamui")
+        let environment = ["PATH": "/usr/bin", "HOME": "/Users/n"]
+
+        let withCLI = ExecutableLocator(runner: FakeRunner { _ in CommandResult(exitStatus: 1) }, isExecutable: { [bundled.path, "/opt/homebrew/bin/kamui"].contains($0) })
+        XCTAssertEqual(withCLI.locate(override: nil, environment: environment, bundled: bundled)?.path, "/opt/homebrew/bin/kamui", "the terminal's kamui wins, so both use one build")
+        XCTAssertEqual(withCLI.locate(override: bundled.path, environment: environment, bundled: bundled), bundled)
+
+        let alone = ExecutableLocator(runner: FakeRunner { _ in CommandResult(exitStatus: 1) }, isExecutable: { $0 == bundled.path })
+        XCTAssertEqual(alone.locate(override: nil, environment: environment, bundled: bundled), bundled)
+        XCTAssertNil(alone.locate(override: "/missing/kamui", environment: environment, bundled: bundled), "an explicit choice never falls back")
+        XCTAssertNil(ExecutableLocator(runner: FakeRunner { _ in CommandResult(exitStatus: 1) }, isExecutable: { _ in false }).locate(override: nil, environment: environment, bundled: bundled))
     }
 
     func testImportsPathAndAgentFromRealLoginShellDespiteStartupOutput() async throws {

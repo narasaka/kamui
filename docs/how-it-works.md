@@ -63,8 +63,8 @@ for remote port 0, so `sshd` may log `connect_to 127.0.0.1 port 0: failed`.
 
 Background reconnects never prompt. If one needs a passphrase or another
 answer, `kamui status` shows `authentication-required` and Kamui stops
-retrying; run `kamui foo` in a terminal and Kamui relays OpenSSH's prompts to
-it.
+retrying; run `kamui foo` in a terminal, or choose **Reconnect** in the menu
+bar app, and Kamui relays OpenSSH's prompts there.
 
 Port discovery opens its own SSH connection that can't prompt. Mirroring
 therefore needs authentication that works without a prompt once you've

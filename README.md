@@ -97,9 +97,10 @@ within about a second and go away when the remote service stops.
 
 On macOS 13 or later, the menu bar app lists your sessions and their ports,
 opens a port in your browser with one click, and connects to hosts from your
-SSH config. It drives the `kamui` CLI you installed, so sessions keep running
-if you quit it. If a host needs a passphrase or a host-key decision, it opens
-your terminal and Kamui asks you there. See [the menu bar app](docs/menu-bar-app.md).
+SSH config. It asks for passphrases and host-key decisions itself, and it
+carries its own `kamui`, so you never need a terminal. The app and the CLI share
+the same sessions: start one in either and stop it from the other. See
+[the menu bar app](docs/menu-bar-app.md).
 
 ## Dedicated browser
 
@@ -111,8 +112,8 @@ caveats.
 ## Troubleshooting
 
 - `kamui doctor foo` checks the usual suspects.
-- If status says authentication is required, run `kamui foo` in a terminal and
-  answer the prompt.
+- If status says authentication is required, run `kamui foo` in a terminal, or
+  choose Reconnect in the menu bar app, and answer the prompt.
 - `kamui logs -f` streams OpenSSH's diagnostics.
 - A port that's already taken on your laptop stays with whoever has it.
   `kamui status` lists it as a conflict.

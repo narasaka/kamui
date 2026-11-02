@@ -111,6 +111,10 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
       - name: Test menu bar app
         run: make check-macos-app
       - name: Build universal menu bar app

@@ -25,9 +25,10 @@ go test -race ./...
 ```
 
 `make check` runs the equivalent repository checks. When changing `macos/`,
-`kamui status --json`, or `--non-interactive`, also run `make check-macos-app`.
-The menu bar app depends only on the CLI's public contract, never on the
-controller socket.
+`kamui status --json`, `--non-interactive`, or `--json-prompts`, also run
+`make check-macos-app`. The menu bar app depends only on the CLI's public
+contract, never on the controller socket. It bundles a `kamui` built by
+`scripts/build-macos-app.sh`, so Go changes also ship in the app.
 
 `site/` builds kamui.narasaka.dev from the docs listed in `site/src/lib/docs.ts`.
 When changing `docs/` or `site/`, also run `pnpm install && pnpm build` in

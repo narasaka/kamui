@@ -1,7 +1,8 @@
 import Foundation
 
-/// Drives the installed kamui CLI. The app never talks to the controller
-/// socket directly, so it stays compatible with the CLI's controller handoff.
+/// Drives the kamui CLI: the user's installed one or the copy inside the app.
+/// The app never talks to the controller socket directly, so it stays
+/// compatible with the CLI's controller handoff.
 public struct KamuiClient: Sendable {
     public var executable: URL
     public var environment: [String: String]
@@ -20,27 +21,68 @@ public struct KamuiClient: Sendable {
     }
 
     /// Starts or reuses a mirroring session and returns any warnings kamui
-    /// printed, such as enabled agent forwarding. OpenSSH may not prompt, so
-    /// a session that needs a passphrase or host-key decision fails promptly
-    /// and the user can retry in a terminal. The explicit `mirror` command
-    /// keeps a destination named like a subcommand, such as `status`, a
-    /// destination.
+    /// printed, such as enabled agent forwarding. The explicit `mirror`
+    /// command keeps a destination named like a subcommand, such as `status`,
+    /// a destination.
+    ///
+    /// With a prompt handler, kamui relays OpenSSH's passphrase, password,
+    /// host-key, and other prompts to it (`--json-prompts`). Answers pass
+    /// through memory to kamui's standard input and are never stored or
+    /// logged. Time spent waiting for an answer does not count toward the
+    /// timeout. Without one, OpenSSH may not prompt (`--non-interactive`).
     ///
     /// A Tailscale SSH check prints a sign-in link and holds the connection
     /// until the user signs in. `onSignInURL` receives each such link once,
     /// while the command is still waiting.
-    public func connect(_ destination: String, onSignInURL: @escaping @Sendable (URL) -> Void = { _ in }) async throws -> [String] {
+    public func connect(_ destination: String, prompts: SSHPromptHandler? = nil, onSignInURL: @escaping @Sendable (URL) -> Void = { _ in }) async throws -> [String] {
         let destination = try Destination.validate(destination)
         let seen = SeenURLs()
-        let result = try await run(["mirror", "--non-interactive", destination], timeout: .seconds(120)) { line in
+        var io = CommandIO(onStandardErrorLine: { line in
             if let url = Self.signInURL(in: line), seen.insert(url) {
                 onSignInURL(url)
             }
+        })
+        let tasks = PromptTasks()
+        defer { tasks.cancelAll() }
+        var mode = "--non-interactive"
+        if let prompts {
+            mode = "--json-prompts"
+            let input = CommandInput()
+            io.input = input
+            io.onStandardOutputLine = { line in
+                switch PromptProtocol.message(from: line) {
+                case .prompt(let prompt) where prompt.kind == .notice:
+                    prompts.notice(prompt.text)
+                case .prompt(let prompt):
+                    input.holdTimeout()
+                    tasks.start(prompt.id) {
+                        defer { input.releaseTimeout() }
+                        let reply = await prompts.answer(prompt)
+                        guard !Task.isCancelled else { return }
+                        try? input.write(PromptProtocol.line(replying: reply, to: prompt.id))
+                    }
+                case .cancel(let id):
+                    tasks.cancel(id)
+                case nil:
+                    break
+                }
+            }
+        }
+        let result: CommandResult
+        do {
+            result = try await run(["mirror", mode, destination], timeout: .seconds(120), io: io)
+        } catch KamuiError.commandFailed(let message) where prompts != nil && Self.rejectsJSONPrompts(message) {
+            throw KamuiError.promptsUnsupported(executable.path)
         }
         return result.standardError
             .split(separator: "\n")
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { $0.hasPrefix("WARNING:") }
+    }
+
+    /// Reports whether an older kamui rejected `--json-prompts`.
+    static func rejectsJSONPrompts(_ message: String) -> Bool {
+        message.contains("flag provided but not defined") && message.contains("json-prompts")
     }
 
     public func stop(_ destination: String) async throws {
@@ -52,8 +94,8 @@ public struct KamuiClient: Sendable {
         _ = try await run(["stop", "--all"], timeout: .seconds(30))
     }
 
-    private func run(_ arguments: [String], timeout: Duration, onStandardErrorLine: StandardErrorLineHandler? = nil) async throws -> CommandResult {
-        let result = try await runner.run(executable, arguments: arguments, environment: environment, timeout: timeout, onStandardErrorLine: onStandardErrorLine)
+    private func run(_ arguments: [String], timeout: Duration, io: CommandIO = CommandIO()) async throws -> CommandResult {
+        let result = try await runner.run(executable, arguments: arguments, environment: environment, timeout: timeout, io: io)
         guard result.exitStatus == 0 else {
             throw KamuiError.commandFailed(Self.failureMessage(result))
         }

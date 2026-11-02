@@ -55,11 +55,18 @@ On macOS 13 or later, install the signed and notarized menu bar app with:
 brew install --cask narasaka/tap/kamui-app
 ```
 
-The cask depends on the `kamui` formula and installs it when needed. The app
-runs that executable. Upgrade or uninstall the app with:
+The app contains its own `kamui`, so it works on its own. The cask also
+installs the `kamui` formula, so `kamui` works in your terminal, and the app
+uses that executable when it finds it. The cask doesn't pin the formula's
+version, so upgrade both together to keep them on the same release:
 
 ```sh
-brew upgrade --cask narasaka/tap/kamui-app
+brew upgrade narasaka/tap/kamui narasaka/tap/kamui-app
+```
+
+Uninstall the app with:
+
+```sh
 brew uninstall --cask kamui-app
 ```
 
@@ -67,8 +74,9 @@ Homebrew may ask you to trust the tap first with `brew trust narasaka/tap`.
 Uninstalling the app does not stop sessions. Run `kamui stop --all` first if
 you want them stopped.
 
-To build the app from source, run `make macos-app` with Xcode installed. It
-writes an ad-hoc-signed `dist/Kamui.app`.
+To build the app from source, run `make macos-app` with Xcode and Go
+installed. It writes an ad-hoc-signed `dist/Kamui.app` with `kamui` in
+`Contents/Helpers`.
 
 ## User data
 
@@ -132,7 +140,8 @@ git push origin v0.0.2
 The workflow validates that the tag belongs to `main`, runs all checks, builds
 Darwin and Linux binaries for ARM64 and AMD64, publishes them with
 `checksums.txt`, and updates the Homebrew formula. With the signing secrets, it
-also builds the universal menu bar app, signs it with the hardened runtime,
+also builds the universal menu bar app with a `kamui` that has the same
+release identity as the formula, signs both with the hardened runtime,
 notarizes and staples it, publishes `Kamui_VERSION_macos.zip`, and writes
 `Casks/kamui-app.rb` to the tap from this repository's `Casks/kamui-app.rb`
 template. The cask records the archive's SHA-256; `checksums.txt` covers only

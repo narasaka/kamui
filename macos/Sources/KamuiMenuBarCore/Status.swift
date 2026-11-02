@@ -73,8 +73,10 @@ public enum SessionState: Equatable, Sendable, Decodable {
         }
     }
 
-    /// Whether the user must reconnect in a terminal so OpenSSH can prompt.
-    public var needsTerminal: Bool {
+    /// Whether the session is not working and the app offers to reconnect
+    /// it. Kamui may already be retrying an unavailable session in the
+    /// background; a session that needs authentication waits for the user.
+    public var canReconnect: Bool {
         switch self {
         case .authenticationRequired, .unavailable: true
         default: false
@@ -116,7 +118,7 @@ public enum Indicator: Equatable, Sendable {
     case attention
 
     public init(sessions: [Session], pending: Set<String> = [], failed: Bool = false) {
-        if failed || sessions.contains(where: { $0.state.needsTerminal || $0.mirror.lastError != nil }) {
+        if failed || sessions.contains(where: { $0.state.canReconnect || $0.mirror.lastError != nil }) {
             self = .attention
         } else if !pending.isEmpty || sessions.contains(where: { $0.state != .connected }) {
             self = .connecting
