@@ -49,9 +49,22 @@ QUIC, or HTTP/3.
 
 A dropped SSH connection breaks open TCP streams and WebSockets. Kamui
 reconnects in the background, and new connections work once it succeeds.
+While the network is down, Kamui keeps trying: it waits a little longer after
+each failure, up to a minute between attempts, and `kamui status` shows
+`unavailable` with the last error.
+
+When your laptop wakes from sleep or its IP addresses change, for example on
+another Wi-Fi network, Kamui checks each connection right away instead of
+waiting for OpenSSH to notice, which can take 45 seconds. A connection that
+still answers is kept along with its open streams, which often happens over
+Tailscale. One that doesn't is replaced, and a session that was waiting to
+reconnect tries again immediately. Each check asks the SSH server
+for remote port 0, so `sshd` may log `connect_to 127.0.0.1 port 0: failed`.
+
 Background reconnects never prompt. If one needs a passphrase or another
-answer, `kamui status` shows `authentication-required`; run `kamui foo` in a
-terminal and Kamui relays OpenSSH's prompts to it.
+answer, `kamui status` shows `authentication-required` and Kamui stops
+retrying; run `kamui foo` in a terminal and Kamui relays OpenSSH's prompts to
+it.
 
 Port discovery opens its own SSH connection that can't prompt. Mirroring
 therefore needs authentication that works without a prompt once you've

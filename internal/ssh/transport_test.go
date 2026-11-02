@@ -586,3 +586,153 @@ func (p *delayedSOCKSProcess) Kill() error {
 	p.once.Do(func() { close(p.done) })
 	return nil
 }
+
+func TestOnlyUnattendedReconnectLimitsConnectTimeout(t *testing.T) {
+	t.Parallel()
+
+	hasConnectTimeout := func(arguments []string) bool {
+		for index := 0; index+1 < len(arguments); index++ {
+			if arguments[index] == "-o" && arguments[index+1] == "ConnectTimeout=10" {
+				return true
+			}
+		}
+		return false
+	}
+	unattended := &readyLauncher{}
+	connection, err := (ssh.Transport{Launcher: unattended, ReadinessTimeout: time.Second}).ConnectUnattended(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.Close()
+	if !hasConnectTimeout(unattended.request.Args) {
+		t.Fatalf("unattended OpenSSH args = %v, want ConnectTimeout=10", unattended.request.Args)
+	}
+	if got := unattended.request.Args[len(unattended.request.Args)-1]; got != "reyna" {
+		t.Fatalf("last OpenSSH argument = %q, want destination", got)
+	}
+	attended := &readyLauncher{}
+	connection, err = (ssh.Transport{Launcher: attended, ReadinessTimeout: time.Second}).Connect(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = connection.Close()
+	if hasConnectTimeout(attended.request.Args) {
+		t.Fatalf("interactive OpenSSH args = %v, want the user's ConnectTimeout", attended.request.Args)
+	}
+}
+
+func TestUnresolvableHostIsTransientOnlyInTheBackground(t *testing.T) {
+	t.Parallel()
+
+	launcher := failingLauncher{diagnostic: "ssh: Could not resolve hostname reyna: nodename nor servname provided, or not known\n"}
+	transport := ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}
+	for _, test := range []struct {
+		name    string
+		connect func(context.Context, string) (*ssh.Connection, error)
+		want    ssh.FailureKind
+	}{
+		{"interactive", transport.Connect, ssh.ConfigurationFailure},
+		{"unattended", transport.ConnectUnattended, ssh.TransientFailure},
+	} {
+		_, err := test.connect(context.Background(), "reyna")
+		var connectError *ssh.ConnectError
+		if !errors.As(err, &connectError) || connectError.Kind != test.want {
+			t.Fatalf("%s error = %v, want failure kind %d", test.name, err, test.want)
+		}
+	}
+}
+
+func TestProbeSucceedsWhenTheServerAnswers(t *testing.T) {
+	t.Parallel()
+
+	launcher := &socksLauncher{replyCode: 5}
+	connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).Connect(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	if err := connection.Probe(context.Background(), time.Second); err != nil {
+		t.Fatalf("Probe = %v, want nil after a refusal", err)
+	}
+	if got := launcher.target(); got != "127.0.0.1:0" {
+		t.Fatalf("probe target = %q, want remote port 0", got)
+	}
+}
+
+func TestProbeReportsSilentServerAsUnresponsive(t *testing.T) {
+	t.Parallel()
+
+	for _, answerGreeting := range []bool{true, false} {
+		launcher := &silentSOCKSLauncher{answerGreeting: answerGreeting}
+		connection, err := (ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second}).Connect(context.Background(), "reyna")
+		if err != nil {
+			t.Fatal(err)
+		}
+		started := time.Now()
+		err = connection.Probe(context.Background(), 100*time.Millisecond)
+		_ = connection.Close()
+		if !errors.Is(err, ssh.ErrUnresponsive) {
+			t.Fatalf("Probe with greeting answered=%v = %v, want ErrUnresponsive", answerGreeting, err)
+		}
+		if elapsed := time.Since(started); elapsed > time.Second {
+			t.Fatalf("Probe took %s, want about the timeout", elapsed)
+		}
+	}
+}
+
+func TestProbeStopsWithItsContext(t *testing.T) {
+	t.Parallel()
+
+	connection, err := (ssh.Transport{Launcher: &silentSOCKSLauncher{answerGreeting: true}, ReadinessTimeout: time.Second}).Connect(context.Background(), "reyna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = connection.Close() })
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if err := connection.Probe(ctx, time.Minute); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Probe = %v, want context deadline", err)
+	}
+}
+
+// silentSOCKSLauncher accepts SOCKS connections like an OpenSSH client whose
+// server stopped answering: at most the local greeting, then nothing.
+type silentSOCKSLauncher struct {
+	answerGreeting bool
+}
+
+func (l *silentSOCKSLauncher) Start(request ssh.StartRequest) (ssh.Process, error) {
+	var address string
+	for index, argument := range request.Args {
+		if argument == "-D" && index+1 < len(request.Args) {
+			address = request.Args[index+1]
+		}
+	}
+	listener, err := net.Listen("tcp4", address)
+	if err != nil {
+		return nil, err
+	}
+	process := &listeningProcess{listener: listener, done: make(chan struct{})}
+	go func() {
+		for {
+			connection, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				defer func() { _ = connection.Close() }()
+				if l.answerGreeting {
+					greeting := make([]byte, 3)
+					if _, err := io.ReadFull(connection, greeting); err != nil {
+						return
+					}
+					if _, err := connection.Write([]byte{5, 0}); err != nil {
+						return
+					}
+				}
+				<-process.done
+			}()
+		}
+	}()
+	return process, nil
+}

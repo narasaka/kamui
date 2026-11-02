@@ -16,6 +16,7 @@ import (
 	"github.com/narasaka/kamui/internal/session"
 	"github.com/narasaka/kamui/internal/ssh"
 	"github.com/narasaka/kamui/internal/state"
+	"github.com/narasaka/kamui/internal/wake"
 )
 
 func main() {
@@ -84,6 +85,7 @@ func runController(arguments []string) error {
 	defer func() { _ = manager.Close() }()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go wake.Watcher{}.Run(ctx, func(reason wake.Reason) { manager.Wake(string(reason)) })
 	server, err := controller.Start(ctx, layout, manager)
 	if err != nil {
 		return err

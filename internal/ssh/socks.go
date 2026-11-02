@@ -16,6 +16,10 @@ import (
 // connection.
 var ErrTunnelUnavailable = errors.New("SSH tunnel is unavailable")
 
+// ErrUnresponsive means a connected OpenSSH transport did not answer a
+// liveness probe in time, so its network path has probably gone away.
+var ErrUnresponsive = errors.New("SSH connection stopped responding")
+
 // SOCKSError is a failure reply returned by the OpenSSH SOCKS listener.
 type SOCKSError struct {
 	Code byte
@@ -154,4 +158,52 @@ func discardBoundAddress(connection net.Conn, addressType byte) error {
 		return fmt.Errorf("read SOCKS5 bound address: %w", err)
 	}
 	return nil
+}
+
+// Probe checks that the SSH server still answers, without waiting for
+// OpenSSH's server-alive limit. It asks the server for a stream to remote
+// port 0, which nothing can listen on. The server answers with a refusal,
+// which OpenSSH reports by closing the SOCKS stream, after one round trip.
+// Any answer proves the connection works; ErrUnresponsive means none
+// arrived within timeout.
+func (c *Connection) Probe(ctx context.Context, timeout time.Duration) error {
+	if State(c.state.Load()) != Connected {
+		return ErrTunnelUnavailable
+	}
+	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp4", c.address)
+	if err != nil {
+		return fmt.Errorf("connect to OpenSSH SOCKS listener: %w", err)
+	}
+	defer func() { _ = connection.Close() }()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = connection.Close() })
+	defer stopCancellation()
+	_ = connection.SetDeadline(time.Now().Add(timeout))
+	if _, err := connection.Write([]byte{5, 1, 0}); err != nil {
+		return probeError(ctx, err)
+	}
+	if _, err := io.ReadFull(connection, make([]byte, 2)); err != nil {
+		return probeError(ctx, err)
+	}
+	if _, err := connection.Write([]byte{5, 1, 0, 1, 127, 0, 0, 1, 0, 0}); err != nil {
+		return probeError(ctx, err)
+	}
+	if _, err := connection.Read(make([]byte, 1)); err != nil && (ctx.Err() != nil || isTimeout(err)) {
+		return probeError(ctx, err)
+	}
+	return nil
+}
+
+func probeError(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	if isTimeout(err) {
+		return ErrUnresponsive
+	}
+	return fmt.Errorf("probe OpenSSH SOCKS listener: %w", err)
+}
+
+func isTimeout(err error) bool {
+	var netError net.Error
+	return errors.As(err, &netError) && netError.Timeout()
 }
