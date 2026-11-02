@@ -1,0 +1,51 @@
+---
+import Icon from "~/components/Icon.astro";
+import Layout from "~/layouts/Layout.astro";
+import { DOCS, REPO_URL } from "~/lib/docs";
+---
+
+<Layout title="kamui docs" description="Documentation for Kamui.">
+  <section>
+    <h1 class="font-medium text-[var(--text-primary)]">Docs</h1>
+    <p class="mt-2 text-[var(--text-secondary)]">
+      These pages are built from the <code>docs/</code> directory in the Kamui repository, so they match <code>main</code>.
+    </p>
+    <ul class="mt-6 space-y-6">
+      {
+        DOCS.map((doc) => (
+          <li>
+            <a
+              class="inline-flex items-center gap-0.5 font-medium text-[var(--text-primary)] hover:text-[var(--accent)] transition-colors"
+              href={`/docs/${doc.slug}`}
+            >
+              {doc.label}
+              <Icon name="arrow-right" class="h-3 w-3" />
+            </a>
+            <p class="mt-1 text-[var(--text-muted)]">{doc.description}</p>
+          </li>
+        ))
+      }
+    </ul>
+  </section>
+
+  <section class="border-t border-[var(--border)] pt-10">
+    <h2 class="font-medium text-[var(--text-primary)]">For contributors</h2>
+    <p class="mt-2 text-[var(--text-muted)]">
+      Design decisions and the original plan stay on GitHub.
+    </p>
+    <div class="mt-3 flex flex-wrap gap-x-4 gap-y-1">
+      <a
+        class="inline-flex items-center gap-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+        href={`${REPO_URL}/tree/main/docs/decisions`}
+        target="_blank"
+        rel="noopener noreferrer">Design decisions<Icon name="arrow-up-right" class="h-3 w-3" /></a
+      >
+      <a
+        class="inline-flex items-center gap-0.5 text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+        href={`${REPO_URL}/blob/main/CONTRIBUTING.md`}
+        target="_blank"
+        rel="noopener noreferrer">Contributing<Icon name="arrow-up-right" class="h-3 w-3" /></a
+      >
+    </div>
+  </section>
+</Layout>

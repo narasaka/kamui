@@ -1,0 +1,82 @@
+---
+import Navbar from "~/components/Navbar.astro";
+import "@fontsource/geist-mono";
+import "~/styles/global.css";
+
+interface Props {
+  title?: string;
+  description?: string;
+}
+
+const {
+  title = "kamui",
+  description = "Use a remote machine's localhost from your laptop. Kamui mirrors a dev box's ports over the SSH you already use.",
+} = Astro.props;
+// Pages build to .html files that vercel.json serves without the extension.
+const path = Astro.url.pathname.replace(/(\/index)?\.html$/, "") || "/";
+const url = new URL(path, Astro.site).href;
+const image = new URL("/icon-512.png", Astro.site).href;
+---
+
+<html lang="en" class="scroll-smooth">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="generator" content={Astro.generator} />
+    <meta name="description" content={description} />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#fafafa" />
+    <link rel="canonical" href={url} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={url} />
+    <meta property="og:title" content={title} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={image} />
+    <meta property="twitter:card" content="summary" />
+    <meta property="twitter:title" content={title} />
+    <meta property="twitter:description" content={description} />
+    <meta property="twitter:image" content={image} />
+    <title>{title}</title>
+    <script is:inline>
+      (() => {
+        const COLORS = { light: "#fafafa", dark: "#09090b" };
+        const read = () => {
+          try {
+            return localStorage.getItem("theme");
+          } catch {
+            return null;
+          }
+        };
+
+        window.__setTheme = (theme, persist) => {
+          const next = theme === "dark" ? "dark" : "light";
+          const root = document.documentElement;
+          root.classList.toggle("dark", next === "dark");
+          root.style.backgroundColor = COLORS[next];
+          root.style.colorScheme = next;
+          document.querySelector('meta[name="theme-color"]')?.setAttribute("content", COLORS[next]);
+          document.querySelector('meta[name="color-scheme"]')?.setAttribute("content", next);
+          if (persist) {
+            try {
+              localStorage.setItem("theme", next);
+            } catch {}
+          }
+        };
+
+        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        window.__setTheme(read() || (prefersDark ? "dark" : "light"), false);
+      })();
+    </script>
+  </head>
+  <body
+    class="flex flex-col items-center bg-[var(--bg)] text-[var(--text-primary)] font-mono text-xs/5 selection:bg-[var(--selection-bg)] selection:text-[var(--selection-text)]"
+  >
+    <Navbar />
+    <main class="w-full max-w-[65ch] lg:max-w-2xl space-y-16 px-4 py-16">
+      <slot />
+    </main>
+  </body>
+</html>

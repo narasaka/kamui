@@ -1,0 +1,254 @@
+---
+// Animates ports opening on a remote machine and showing up on the laptop.
+---
+
+<div class="demo">
+  <div
+    class="demo-grid"
+    id="demo"
+    role="img"
+    aria-label="Animation: ports opening on the remote machine appear on your laptop"
+  >
+    <div class="demo-head">foo <span class="text-[var(--text-muted)]">· 127.0.0.1</span></div>
+    <div class="demo-head mid">ssh</div>
+    <div class="demo-head">laptop <span class="text-[var(--text-muted)]">· localhost</span></div>
+    <div class="demo-pad"></div>
+    <div class="demo-pad"></div>
+    <div class="demo-pad"></div>
+    <div class="demo-pad" data-bottom></div>
+    <div class="demo-pad"></div>
+    <div class="demo-pad"></div>
+  </div>
+  <div class="demo-foot">
+    <span class="demo-log" id="demo-log">$ kamui foo</span>
+    <button class="demo-toggle" id="demo-toggle" type="button" hidden>pause</button>
+  </div>
+</div>
+
+<style is:global>
+  .demo {
+    border: 1px solid var(--border);
+    background-color: var(--surface);
+  }
+
+  .demo-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  }
+
+  .demo-head {
+    padding: 8px 12px;
+    border-bottom: 1px solid var(--border);
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .demo-head.mid {
+    padding: 8px 4px;
+    text-align: center;
+  }
+
+  .demo-pad {
+    height: 8px;
+  }
+
+  .demo-cell {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    padding: 0 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    opacity: 0;
+    transform: translateY(2px);
+    transition:
+      opacity 300ms,
+      transform 300ms;
+  }
+
+  .demo-cell[data-on] {
+    opacity: 1;
+    transform: none;
+  }
+
+  .demo-cell .name {
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .demo-arrow {
+    color: var(--text-muted);
+    text-align: center;
+    opacity: 0;
+    transition:
+      opacity 300ms,
+      color 300ms;
+  }
+
+  .demo-arrow[data-on] {
+    opacity: 1;
+  }
+
+  .demo-arrow[data-live] {
+    color: var(--accent);
+  }
+
+  .demo-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background-color: var(--accent);
+    flex-shrink: 0;
+    align-self: center;
+  }
+
+  .demo-foot {
+    display: flex;
+    gap: 12px;
+    padding: 8px 12px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted);
+  }
+
+  .demo-log {
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .demo-toggle {
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color 150ms;
+  }
+
+  .demo-toggle:hover {
+    color: var(--text-primary);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .demo-cell,
+    .demo-arrow {
+      transition: none;
+    }
+  }
+</style>
+
+<script>
+  const grid = document.getElementById("demo");
+  const log = document.getElementById("demo-log");
+  const bottom = grid?.querySelector("[data-bottom]");
+
+  if (grid && log && bottom) {
+    const ports = [
+      { port: 3000, name: "next dev" },
+      { port: 5173, name: "vite" },
+      { port: 41533, name: "mcp callback" },
+      { port: 5432, name: "postgres" },
+    ];
+
+    const rows = new Map<number, { remote: HTMLElement; arrow: HTMLElement; local: HTMLElement }>();
+    for (const { port, name } of ports) {
+      const remote = document.createElement("div");
+      remote.className = "demo-cell";
+      remote.innerHTML = `<span>:${port}</span><span class="name">${name}</span>`;
+      const arrow = document.createElement("div");
+      arrow.className = "demo-arrow";
+      arrow.textContent = "→";
+      const local = document.createElement("div");
+      local.className = "demo-cell";
+      local.innerHTML = `<span class="demo-dot"></span><span>localhost:${port}</span>`;
+      grid.insertBefore(remote, bottom);
+      grid.insertBefore(arrow, bottom);
+      grid.insertBefore(local, bottom);
+      rows.set(port, { remote, arrow, local });
+    }
+
+    const set = (el: HTMLElement, attr: string, on: boolean) =>
+      on ? el.setAttribute(attr, "") : el.removeAttribute(attr);
+    const open = (port: number, on: boolean) => {
+      const row = rows.get(port)!;
+      set(row.remote, "data-on", on);
+      set(row.arrow, "data-on", on);
+      if (!on) {
+        set(row.arrow, "data-live", false);
+        set(row.local, "data-on", false);
+      }
+    };
+    const mirror = (port: number, on: boolean) => {
+      const row = rows.get(port)!;
+      set(row.arrow, "data-live", on);
+      set(row.local, "data-on", on);
+    };
+    const say = (text: string) => {
+      log.textContent = text;
+    };
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      for (const port of [3000, 5173, 5432]) {
+        open(port, true);
+        mirror(port, true);
+      }
+      say("MIRRORED: 3000, 5173, 5432");
+    } else {
+      const steps: [number, () => void][] = [
+        [600, () => say("$ kamui foo")],
+        [1400, () => say("foo ● connected")],
+        [1200, () => (open(3000, true), say("agent runs `next dev` on foo"))],
+        [900, () => (mirror(3000, true), say("mirrored 3000"))],
+        [1300, () => (open(5173, true), say("agent runs `vite` on foo"))],
+        [900, () => (mirror(5173, true), say("mirrored 5173"))],
+        [1300, () => (open(41533, true), say("agent starts an MCP sign-in"))],
+        [900, () => (mirror(41533, true), say("mirrored 41533, redirect reaches the agent"))],
+        [2400, () => (open(41533, false), say("sign-in done, callback port closes"))],
+        [1200, () => (open(5432, true), say("agent starts postgres on foo"))],
+        [900, () => (mirror(5432, true), say("mirrored 5432"))],
+        [
+          4000,
+          () => {
+            for (const port of rows.keys()) open(port, false);
+            say("$ kamui stop foo");
+          },
+        ],
+      ];
+
+      let index = 0;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let visible = false;
+      let paused = false;
+
+      const tick = () => {
+        const [delay, run] = steps[index];
+        timer = setTimeout(() => {
+          run();
+          index = (index + 1) % steps.length;
+          tick();
+        }, delay);
+      };
+      const sync = () => {
+        clearTimeout(timer);
+        if (visible && !paused) tick();
+      };
+
+      const toggle = document.getElementById("demo-toggle");
+      if (toggle) {
+        toggle.hidden = false;
+        toggle.addEventListener("click", () => {
+          paused = !paused;
+          toggle.textContent = paused ? "play" : "pause";
+          sync();
+        });
+      }
+
+      new IntersectionObserver(([entry]) => {
+        visible = entry.isIntersecting;
+        sync();
+      }).observe(grid);
+    }
+  }
+</script>

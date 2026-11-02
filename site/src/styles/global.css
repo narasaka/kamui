@@ -1,0 +1,261 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Tokens and base styles match narasaka.dev. */
+
+@theme {
+  --font-mono:
+    "Geist Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  --font-sans: var(--font-mono);
+}
+
+@layer base {
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --text-primary: #27272a;
+    --text-secondary: #52525b;
+    --text-muted: #71717a;
+    --border: #e4e4e7;
+    --accent: #16a34a;
+    --selection-bg: #e4e4e7;
+    --selection-text: #27272a;
+    --scrollbar-track: #fafafa;
+    --scrollbar-thumb: #d4d4d8;
+    --scrollbar-thumb-hover: #a1a1aa;
+  }
+
+  .dark {
+    --bg: #09090b;
+    --surface: #18181b;
+    --text-primary: #fafafa;
+    --text-secondary: #a1a1aa;
+    --text-muted: #80808a;
+    --border: #27272a;
+    --accent: #4ade80;
+    --selection-bg: #3f3f46;
+    --selection-text: #ffffff;
+    --scrollbar-track: #09090b;
+    --scrollbar-thumb: #3f3f46;
+    --scrollbar-thumb-hover: #52525b;
+  }
+
+  html {
+    min-height: 100%;
+    background-color: var(--bg);
+    color-scheme: light;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  body {
+    min-height: 100dvh;
+    background-color: var(--bg);
+  }
+
+  ::selection {
+    background-color: var(--selection-bg);
+    color: var(--selection-text);
+  }
+
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: var(--scrollbar-track);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: var(--scrollbar-thumb);
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--scrollbar-thumb-hover);
+  }
+
+  code {
+    color: var(--text-primary);
+  }
+}
+
+@utility animate-blink {
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+/* Kamui additions. */
+
+@layer components {
+  .code-block {
+    position: relative;
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+  }
+
+  .code-block pre {
+    padding: 12px;
+    overflow-x: auto;
+    color: var(--text-primary);
+  }
+
+  .code-block .c {
+    color: var(--text-muted);
+  }
+
+  .code-block .p,
+  .code-block .ok {
+    color: var(--accent);
+  }
+
+  .code-block .p {
+    user-select: none;
+  }
+
+  /* Rendered docs/*.md. */
+
+  .prose {
+    color: var(--text-secondary);
+  }
+
+  .prose > * + * {
+    margin-top: 12px;
+  }
+
+  .prose h1,
+  .prose h2,
+  .prose h3,
+  .prose h4 {
+    color: var(--text-primary);
+    font-weight: 500;
+    scroll-margin-top: 64px;
+  }
+
+  .prose h2 {
+    margin-top: 40px;
+    padding-top: 40px;
+    border-top: 1px solid var(--border);
+  }
+
+  .prose h1 + h2 {
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .prose h3,
+  .prose h4 {
+    margin-top: 24px;
+  }
+
+  .prose h1 + *,
+  .prose h2 + *,
+  .prose h3 + *,
+  .prose h4 + * {
+    margin-top: 16px;
+  }
+
+  .prose a {
+    color: var(--text-primary);
+    text-decoration: underline;
+    text-decoration-color: var(--border);
+    text-underline-offset: 3px;
+    transition: color 150ms;
+  }
+
+  .prose a:hover {
+    color: var(--accent);
+    text-decoration-color: currentColor;
+  }
+
+  .prose strong {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .prose ul,
+  .prose ol {
+    padding-left: 16px;
+  }
+
+  .prose ul {
+    list-style: "- ";
+  }
+
+  .prose ol {
+    list-style: decimal;
+    padding-left: 20px;
+  }
+
+  .prose li + li,
+  .prose li > ul,
+  .prose li > ol {
+    margin-top: 4px;
+  }
+
+  .prose pre {
+    padding: 12px;
+    overflow-x: auto;
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+  }
+
+  .prose blockquote,
+  .prose .alert {
+    padding-left: 12px;
+    border-left: 2px solid var(--border);
+  }
+
+  .prose .alert {
+    border-left-color: var(--accent);
+  }
+
+  .prose .alert > * + * {
+    margin-top: 8px;
+  }
+
+  .prose .alert-title {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .prose table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    border-collapse: collapse;
+  }
+
+  .prose th,
+  .prose td {
+    padding: 6px 12px 6px 0;
+    border-bottom: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+  }
+
+  .prose th {
+    color: var(--text-primary);
+    font-weight: 500;
+  }
+
+  .prose hr {
+    border-color: var(--border);
+  }
+}

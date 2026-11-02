@@ -134,9 +134,9 @@ make check-macos-app   # Swift tests for the menu bar app
 make macos-app         # build dist/Kamui.app
 ```
 
-`site/` holds the static landing page for
-[kamui.narasaka.dev](https://kamui.narasaka.dev). It has no build step; serve
-the directory to preview it.
+`site/` is the Astro site for [kamui.narasaka.dev](https://kamui.narasaka.dev).
+It renders the user-facing pages in `docs/` at build time, so editing a doc
+updates the site. Run `pnpm install && pnpm dev` there to preview it.
 
 Commit subjects use `scope: description`
 ([Scoped Commits](https://scopedcommits.com/)).
