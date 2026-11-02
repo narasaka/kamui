@@ -107,6 +107,7 @@ final class KamuiClientTests: XCTestCase {
     func testSignInURLAcceptsOnlyHTTPSLinksInTailscaleCheckMessage() {
         XCTAssertEqual(KamuiClient.signInURL(in: "# To authenticate, visit: https://login.tailscale.com/a/abc123")?.absoluteString, "https://login.tailscale.com/a/abc123")
         XCTAssertEqual(KamuiClient.signInURL(in: "  To authenticate, visit:  https://login.tailscale.com/a/abc123  ")?.absoluteString, "https://login.tailscale.com/a/abc123")
+        XCTAssertEqual(KamuiClient.signInURL(in: "# To authenticate, visit: https://login.tailscale.com/a/abc123\r")?.absoluteString, "https://login.tailscale.com/a/abc123")
         XCTAssertNil(KamuiClient.signInURL(in: "# To authenticate, visit: http://login.tailscale.com/a/abc123"))
         XCTAssertNil(KamuiClient.signInURL(in: "# To authenticate, visit: file:///Applications/Calculator.app"))
         XCTAssertNil(KamuiClient.signInURL(in: "# To authenticate, visit: https:///missing-host"))

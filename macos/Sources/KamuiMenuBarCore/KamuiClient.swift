@@ -64,7 +64,7 @@ public struct KamuiClient: Sendable {
     /// `# To authenticate, visit: https://login.tailscale.com/a/…`. Only HTTPS
     /// links are accepted.
     static func signInURL(in line: String) -> URL? {
-        var text = Substring(line.trimmingCharacters(in: .whitespaces))
+        var text = Substring(line.trimmingCharacters(in: .whitespacesAndNewlines))
         if text.hasPrefix("#") {
             text = text.dropFirst().drop(while: { $0 == " " })
         }
