@@ -56,12 +56,17 @@ brew install --cask narasaka/tap/kamui-app
 ```
 
 The app contains its own `kamui`, so it works on its own. The cask also
-installs the `kamui` formula from the same release, so `kamui` works in your
-terminal, and the app uses that executable when it finds it. Upgrade or
-uninstall the app with:
+installs the `kamui` formula, so `kamui` works in your terminal, and the app
+uses that executable when it finds it. The cask doesn't pin the formula's
+version, so upgrade both together to keep them on the same release:
 
 ```sh
-brew upgrade --cask narasaka/tap/kamui-app
+brew upgrade narasaka/tap/kamui narasaka/tap/kamui-app
+```
+
+Uninstall the app with:
+
+```sh
 brew uninstall --cask kamui-app
 ```
 

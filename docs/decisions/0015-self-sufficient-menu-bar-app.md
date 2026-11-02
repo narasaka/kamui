@@ -89,8 +89,9 @@ joins them with `lipo`, and signs the CLI with the hardened runtime, a secure
 timestamp, and its own identifier before signing the app that seals it, so
 notarization covers both. The release workflow passes the release commit and
 date to that script. The cask still depends on the `kamui` formula, so
-Homebrew users get the CLI on `PATH`, at the same release, without a second
-step. CI's menu bar app job installs Go and runs for any Go change, because
+Homebrew users get the CLI on `PATH` without a second step. The dependency
+does not pin the formula's version, so the docs tell users to upgrade both
+together. CI's menu bar app job installs Go and runs for any Go change, because
 the app now contains the CLI.
 
 ## Consequences
