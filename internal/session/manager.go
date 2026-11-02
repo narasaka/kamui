@@ -79,7 +79,21 @@ type ManagerOptions struct {
 	ProxyAddresses   ProxyAddressStore
 	MirrorDiscoverer mirror.Discoverer
 	MirrorInterval   time.Duration
+	// ReconnectDelay is the wait after the first failed background
+	// reconnect. Each further failure doubles it, up to MaxReconnectDelay.
+	// Zero values mean 100 milliseconds and one minute.
+	ReconnectDelay    time.Duration
+	MaxReconnectDelay time.Duration
+	// ProbeTimeout bounds the liveness check after a wakeup. Zero means five
+	// seconds.
+	ProbeTimeout time.Duration
 }
+
+const (
+	defaultReconnectDelay    = 100 * time.Millisecond
+	defaultMaxReconnectDelay = time.Minute
+	defaultProbeTimeout      = 5 * time.Second
+)
 
 // ProxyAddressStore persists one loopback proxy endpoint per exact destination.
 type ProxyAddressStore interface {
@@ -119,6 +133,9 @@ type Manager struct {
 	proxyAddresses   ProxyAddressStore
 	mirrorDiscoverer mirror.Discoverer
 	mirrorInterval   time.Duration
+	reconnectDelay   time.Duration
+	maxReconnect     time.Duration
+	probeTimeout     time.Duration
 }
 
 type managedSession struct {
@@ -137,6 +154,8 @@ type managedSession struct {
 	stopBrowser     bool
 	reconnectPaused bool
 	mirror          *mirror.Running
+	// wake holds one pending wakeup for the monitor.
+	wake chan struct{}
 }
 
 // NewManager creates an empty session manager.
@@ -163,6 +182,33 @@ func NewManagerWithOptions(options ManagerOptions) *Manager {
 		proxyAddresses:   options.ProxyAddresses,
 		mirrorDiscoverer: options.MirrorDiscoverer,
 		mirrorInterval:   options.MirrorInterval,
+		reconnectDelay:   orDefault(options.ReconnectDelay, defaultReconnectDelay),
+		maxReconnect:     orDefault(options.MaxReconnectDelay, defaultMaxReconnectDelay),
+		probeTimeout:     orDefault(options.ProbeTimeout, defaultProbeTimeout),
+	}
+}
+
+func orDefault(value, fallback time.Duration) time.Duration {
+	if value == 0 {
+		return fallback
+	}
+	return value
+}
+
+// Wake tells every session that the machine may have slept or changed
+// networks. Each session checks a connected transport at once and retries a
+// lost one without waiting for its backoff.
+func (m *Manager) Wake(reason string) {
+	m.sessionsMu.RLock()
+	defer m.sessionsMu.RUnlock()
+	if len(m.sessions) > 0 {
+		m.logger.Info("Kamui session lifecycle", "event", "wakeup", "reason", reason)
+	}
+	for _, managed := range m.sessions {
+		select {
+		case managed.wake <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -194,6 +240,9 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 	}
 	defer m.mu.Unlock()
 	if existing := m.sessions[destination.Key()]; existing != nil {
+		existing.mu.RLock()
+		before := existing.connection
+		existing.mu.RUnlock()
 		state := existing.snapshot().State
 		if state == SessionUnavailable || state == SessionAuthenticationRequired {
 			connection, err := m.connectUnlocked(ctx, destination, command)
@@ -206,10 +255,16 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 			}
 			existing.mu.Lock()
 			old := existing.connection
-			existing.connection = connection
-			existing.lastError = nil
-			existing.requiresAuth = false
-			existing.reconnectPaused = false
+			if old != before && old.Snapshot().State == ssh.Connected {
+				// The monitor reconnected while this attempt ran, and
+				// streams may already use its connection.
+				old = connection
+			} else {
+				existing.connection = connection
+				existing.lastError = nil
+				existing.requiresAuth = false
+				existing.reconnectPaused = false
+			}
 			existing.mu.Unlock()
 			_ = old.Close()
 		}
@@ -237,6 +292,7 @@ func (m *Manager) ensure(ctx context.Context, command Command) (Result, error) {
 		ctx: sessionContext, cancel: cancel, destination: destination,
 		connection: connection, loopbackMode: command.LoopbackMode,
 		idleTimeout: command.IdleTimeout, stopBrowser: command.StopBrowserOnStop,
+		wake: make(chan struct{}, 1),
 	}
 	runningProxy, err := proxy.Start(m.ctx, proxy.Dialers{
 		Direct: (&net.Dialer{}).DialContext,
@@ -560,7 +616,6 @@ func (s *managedSession) dial(ctx context.Context, network, address string) (net
 
 func (s *managedSession) close() error {
 	s.mu.RLock()
-	connection := s.connection
 	runningProxy := s.proxy
 	adapter := s.browserAdapter
 	profile := s.browserProfile
@@ -577,7 +632,13 @@ func (s *managedSession) close() error {
 			cancel()
 		}
 	}
+	// Cancel under the lock that publishes reconnects, so a reconnect either
+	// lands before this reads the connection or sees the cancellation and
+	// closes its own.
+	s.mu.Lock()
 	s.cancel()
+	connection := s.connection
+	s.mu.Unlock()
 	var mirrorErr error
 	if runningMirror != nil {
 		mirrorErr = runningMirror.Close()
@@ -585,74 +646,120 @@ func (s *managedSession) close() error {
 	return errors.Join(browserErr, mirrorErr, runningProxy.Close(), connection.Close())
 }
 
+// monitor expires idle sessions and restores lost transports. It retries a
+// transient failure until it succeeds, waiting longer after each failure up
+// to maxReconnect. A wakeup checks a connected transport and makes the next
+// retry immediate. An authentication or configuration failure pauses retries
+// until the user runs Kamui again.
 func (m *Manager) monitor(managed *managedSession) {
-	const attempts = 5
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
+	delay := m.reconnectDelay
+	var retryAt time.Time
 	for {
+		woke := false
 		select {
 		case <-managed.ctx.Done():
 			return
 		case <-ticker.C:
+		case <-managed.wake:
+			woke = true
 		}
 		activity := managed.proxy.Activity()
 		if managed.idleTimeout > 0 && activity.Connections == 0 && time.Since(activity.LastActivity) >= managed.idleTimeout {
 			m.expire(managed)
 			return
 		}
-		if managed.snapshot().State != SessionUnavailable {
+		if woke {
+			delay = m.reconnectDelay
+			retryAt = time.Time{}
+		}
+		// Read the connection before its state, so a foreground ensure that
+		// publishes after this either shows as connected or as a changed
+		// connection below.
+		managed.mu.RLock()
+		previous := managed.connection
+		managed.mu.RUnlock()
+		switch managed.snapshot().State {
+		case SessionConnected:
+			// A foreground reconnect may have ended an outage, so the next
+			// one starts its backoff afresh.
+			delay = m.reconnectDelay
+			retryAt = time.Time{}
+			if woke {
+				m.probe(managed)
+			}
+			continue
+		case SessionUnavailable:
+		default:
 			continue
 		}
 		managed.mu.RLock()
 		reconnectPaused := managed.reconnectPaused
 		managed.mu.RUnlock()
-		if reconnectPaused {
+		if reconnectPaused || time.Now().Before(retryAt) {
 			continue
 		}
 
-		delay := 100 * time.Millisecond
-		reconnected := false
-		for attempt := 0; attempt < attempts; attempt++ {
-			m.logger.Info("Kamui session lifecycle", "event", "ssh_reconnect_attempt", "session_key", managed.destination.Key(), "attempt", attempt+1)
-			connection, err := m.transport.ConnectUnattended(managed.ctx, managed.destination.String())
-			if err == nil {
-				managed.mu.Lock()
-				old := managed.connection
-				managed.connection = connection
-				managed.lastError = nil
-				managed.reconnectPaused = false
-				managed.mu.Unlock()
-				_ = old.Close()
-				m.logger.Info("Kamui session lifecycle", "event", "ssh_reconnected", "session_key", managed.destination.Key())
-				reconnected = true
-				break
-			}
-			managed.mu.Lock()
-			managed.lastError = err
-			var connectError *ssh.ConnectError
-			if errors.As(err, &connectError) && connectError.Kind != ssh.TransientFailure {
-				managed.requiresAuth = true
-				managed.reconnectPaused = true
-				managed.mu.Unlock()
-				m.logger.Warn("Kamui session lifecycle", "event", "ssh_authentication_required", "session_key", managed.destination.Key(), "failure_kind", connectFailureKind(err))
-				break
-			}
+		m.logger.Info("Kamui session lifecycle", "event", "ssh_reconnect_attempt", "session_key", managed.destination.Key())
+		connection, err := m.transport.ConnectUnattended(managed.ctx, managed.destination.String())
+		managed.mu.Lock()
+		if managed.ctx.Err() != nil || managed.connection != previous {
+			// The session stopped, or a foreground ensure replaced the
+			// connection, while this attempt ran. Its result no longer applies.
+			stopped := managed.ctx.Err() != nil
 			managed.mu.Unlock()
-			select {
-			case <-managed.ctx.Done():
+			if err == nil {
+				_ = connection.Close()
+			}
+			if stopped {
 				return
-			case <-time.After(delay):
 			}
-			if delay < 2*time.Second {
-				delay *= 2
-			}
+			continue
 		}
-		if !reconnected {
-			managed.mu.Lock()
+		if err == nil {
+			managed.connection = connection
+			managed.lastError = nil
+			managed.reconnectPaused = false
+			managed.mu.Unlock()
+			_ = previous.Close()
+			m.logger.Info("Kamui session lifecycle", "event", "ssh_reconnected", "session_key", managed.destination.Key())
+			delay = m.reconnectDelay
+			retryAt = time.Time{}
+			continue
+		}
+		managed.lastError = err
+		var connectError *ssh.ConnectError
+		if errors.As(err, &connectError) && connectError.Kind != ssh.TransientFailure {
+			managed.requiresAuth = true
 			managed.reconnectPaused = true
 			managed.mu.Unlock()
+			m.logger.Warn("Kamui session lifecycle", "event", "ssh_authentication_required", "session_key", managed.destination.Key(), "failure_kind", connectFailureKind(err))
+			continue
 		}
+		managed.mu.Unlock()
+		m.logger.Info("Kamui session lifecycle", "event", "ssh_reconnect_scheduled", "session_key", managed.destination.Key(), "delay", delay.String())
+		retryAt = time.Now().Add(delay)
+		delay = min(delay*2, m.maxReconnect)
 	}
+}
+
+// probe closes a connected transport that no longer answers, or whose local
+// SOCKS listener fails, so the monitor replaces it now instead of after
+// OpenSSH's server-alive limit.
+func (m *Manager) probe(managed *managedSession) {
+	managed.mu.RLock()
+	connection := managed.connection
+	managed.mu.RUnlock()
+	err := connection.Probe(managed.ctx, m.probeTimeout)
+	if err == nil || managed.ctx.Err() != nil {
+		return
+	}
+	m.logger.Warn("Kamui session lifecycle", "event", "ssh_unresponsive", "session_key", managed.destination.Key())
+	managed.mu.Lock()
+	managed.lastError = err
+	managed.mu.Unlock()
+	_ = connection.Close()
 }
 
 func (m *Manager) expire(managed *managedSession) {

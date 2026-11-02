@@ -1,6 +1,6 @@
 # ADR 0005: Use foreground bootstrap and bounded unattended reconnects
 
-- Status: accepted
+- Status: accepted; reconnect policy amended by ADR 0014
 - Date: 2026-09-11
 
 ## Context

@@ -178,7 +178,7 @@ func (t Transport) connect(ctx context.Context, destination string, unattended b
 		}
 		lastErr = err
 		if !isForwardBindRace(stderr) {
-			return nil, classifyConnectError(destination, stderr, err)
+			return nil, classifyConnectError(destination, stderr, err, unattended)
 		}
 	}
 	return nil, &ConnectError{
@@ -214,6 +214,11 @@ func (t Transport) connectAttempt(ctx context.Context, destination string, unatt
 	}
 	if unattended || t.NoPrompts {
 		arguments = append(arguments, "-o", "BatchMode=yes")
+	}
+	if unattended {
+		// A background reconnect to an address that no longer answers fails
+		// within this limit and is retried, instead of using up the readiness limit.
+		arguments = append(arguments, "-o", "ConnectTimeout="+unattendedConnectTimeout)
 	}
 	arguments = append(arguments, destination)
 	request := StartRequest{
@@ -286,7 +291,16 @@ func isForwardBindRace(stderr string) bool {
 		strings.Contains(folded, "cannot listen to port")
 }
 
-func classifyConnectError(destination, stderr string, err error) error {
+// unattendedConnectTimeout is OpenSSH's ConnectTimeout for background
+// reconnects, in seconds.
+const unattendedConnectTimeout = "10"
+
+// classifyConnectError decides whether a failed connection may be retried
+// without the user. A name that does not resolve is a configuration failure
+// in the foreground, where it is usually a typo. In the background the same
+// name worked before, so the failure is usually a network that is still
+// coming up, such as after waking or while a VPN's DNS starts.
+func classifyConnectError(destination, stderr string, err error, unattended bool) error {
 	folded := strings.ToLower(stderr)
 	kind := TransientFailure
 	if strings.Contains(folded, "permission denied") ||
@@ -294,8 +308,8 @@ func classifyConnectError(destination, stderr string, err error) error {
 		strings.Contains(folded, "too many authentication failures") {
 		kind = AuthenticationFailure
 	} else if strings.Contains(folded, "bad configuration option") ||
-		strings.Contains(folded, "could not resolve hostname") ||
-		strings.Contains(folded, "hostname contains invalid characters") {
+		strings.Contains(folded, "hostname contains invalid characters") ||
+		(!unattended && strings.Contains(folded, "could not resolve hostname")) {
 		kind = ConfigurationFailure
 	}
 	if diagnostic := strings.TrimSpace(stderr); diagnostic != "" {
