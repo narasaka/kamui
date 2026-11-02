@@ -12,6 +12,7 @@ filters='
 go             *.go go.mod go.sum .golangci* Makefile cmd/* internal/* integration/* scripts/* Casks/* macos/Resources/*
 macos-app      macos/* Makefile scripts/build-macos-app.sh Casks/* cmd/* internal/app/* internal/cliapp/* internal/session/*
 browser-smoke  go.mod go.sum cmd/* internal/* integration/*
+site           site/* docs/* *.md
 '
 
 # Paths that change CI itself select every group.
@@ -19,7 +20,7 @@ ci_paths='.github/* scripts/ci-jobs.sh'
 
 # Paths that no job checks. Any other path that no filter covers selects every
 # group, so new kinds of files are checked until they are given a filter.
-unchecked_paths='docs/* assets/* Formula/* *.md LICENSE .gitignore'
+unchecked_paths='assets/* Formula/* LICENSE .gitignore'
 
 matches() {
   local path="$1" pattern

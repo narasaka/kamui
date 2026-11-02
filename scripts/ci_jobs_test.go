@@ -12,7 +12,10 @@ import (
 	"testing"
 )
 
-var allCIGroups = []string{"go", "macos-app", "browser-smoke"}
+var allCIGroups = []string{"go", "macos-app", "browser-smoke", "site"}
+
+// Every group that builds or tests Kamui's code, but not the website.
+var codeCIGroups = []string{"go", "macos-app", "browser-smoke"}
 
 func TestCIJobsSelectsGroupsForChangedPaths(t *testing.T) {
 	for _, test := range []struct {
@@ -21,18 +24,20 @@ func TestCIJobsSelectsGroupsForChangedPaths(t *testing.T) {
 		want  []string
 	}{
 		{name: "nothing changed", want: []string{}},
-		{name: "docs only", paths: []string{"docs/cli.md", "README.md", "assets/logo.svg"}, want: []string{}},
+		{name: "docs only", paths: []string{"docs/cli.md", "README.md", "assets/logo.svg"}, want: []string{"site"}},
+		{name: "website", paths: []string{"site/src/pages/index.astro"}, want: []string{"site"}},
+		{name: "unchecked files", paths: []string{"assets/logo.svg", "LICENSE", "Formula/kamui.rb"}, want: []string{}},
 		{name: "Go change in internal", paths: []string{"internal/proxy/proxy.go"}, want: []string{"go", "browser-smoke"}},
-		{name: "CLI contract used by the menu bar app", paths: []string{"internal/cliapp/status_json.go"}, want: allCIGroups},
-		{name: "status fixture read by the menu bar app tests", paths: []string{"internal/cliapp/testdata/status.json"}, want: allCIGroups},
+		{name: "CLI contract used by the menu bar app", paths: []string{"internal/cliapp/status_json.go"}, want: codeCIGroups},
+		{name: "status fixture read by the menu bar app tests", paths: []string{"internal/cliapp/testdata/status.json"}, want: codeCIGroups},
 		{name: "menu bar app source", paths: []string{"macos/Sources/KamuiMenuBar/AppModel.swift"}, want: []string{"macos-app"}},
 		{name: "menu bar app bundle resources checked by Go tests", paths: []string{"macos/Resources/Info.plist"}, want: []string{"go", "macos-app"}},
 		{name: "lint configuration", paths: []string{".golangci.yml"}, want: []string{"go"}},
 		{name: "Go module", paths: []string{"go.mod"}, want: []string{"go", "browser-smoke"}},
 		{name: "Go checksums", paths: []string{"go.sum"}, want: []string{"go", "browser-smoke"}},
-		{name: "CLI entry point", paths: []string{"cmd/kamui/main.go"}, want: allCIGroups},
-		{name: "session status reported by status --json", paths: []string{"internal/session/session.go"}, want: allCIGroups},
-		{name: "non-interactive mirroring used by the menu bar app", paths: []string{"internal/app/app.go"}, want: allCIGroups},
+		{name: "CLI entry point", paths: []string{"cmd/kamui/main.go"}, want: codeCIGroups},
+		{name: "session status reported by status --json", paths: []string{"internal/session/session.go"}, want: codeCIGroups},
+		{name: "non-interactive mirroring used by the menu bar app", paths: []string{"internal/app/app.go"}, want: codeCIGroups},
 		{name: "integration tests", paths: []string{"integration/browser_test.go"}, want: []string{"go", "browser-smoke"}},
 		{name: "Makefile", paths: []string{"Makefile"}, want: []string{"go", "macos-app"}},
 		{name: "menu bar app build script", paths: []string{"scripts/build-macos-app.sh"}, want: []string{"go", "macos-app"}},
@@ -75,7 +80,7 @@ func TestCIJobsReadsEveryPathAfterSelectingAllGroups(t *testing.T) {
 	if writeErr != nil || closeErr != nil {
 		t.Fatalf("ci-jobs.sh stopped reading its input early: write %v, close %v", writeErr, closeErr)
 	}
-	if got := strings.TrimSpace(output.String()); got != `jobs=["go","macos-app","browser-smoke"]` {
+	if got := strings.TrimSpace(output.String()); got != `jobs=["go","macos-app","browser-smoke","site"]` {
 		t.Fatalf("ci-jobs.sh printed %q", got)
 	}
 }

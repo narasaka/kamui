@@ -82,6 +82,8 @@ jobs:
         run: scripts/package.sh ci
 
   site:
+    needs: changes
+    if: contains(fromJSON(needs.changes.outputs.jobs), 'site')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -164,7 +166,7 @@ jobs:
   ci-passed:
     name: CI passed
     if: always()
-    needs: [changes, format, lint, test, macos-app, browser-smoke, linux-browser-smoke]
+    needs: [changes, format, lint, test, site, macos-app, browser-smoke, linux-browser-smoke]
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected job to pass
