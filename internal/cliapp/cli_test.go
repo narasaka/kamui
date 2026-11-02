@@ -1,6 +1,7 @@
 package cliapp_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -856,5 +857,89 @@ func TestConnectWithoutPromptRelayStillWorksWhenBrokerCannotStart(t *testing.T) 
 	}
 	if !strings.Contains(errorOutput.String(), "NOTICE: OpenSSH prompts cannot be relayed") {
 		t.Fatalf("stderr = %q, want relay notice", errorOutput.String())
+	}
+}
+
+func TestMirrorJSONPromptsRelaysOpenSSHPromptsOverStandardStreams(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name    string
+		reply   string
+		wantErr bool
+	}{
+		{name: "answered", reply: `{"id":1,"answer":"open sesame"}`},
+		{name: "declined", reply: `{"id":1,"declined":true}`, wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			root, err := os.MkdirTemp("/tmp", "kamui-cli-json-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(root) })
+			layout := state.NewLayout(root)
+			launcher := &testsupport.PromptingSSHLauncher{Prompt: "Enter passphrase for key '/k': ", Passphrase: "open sesame"}
+			manager := session.NewManagerWithOptions(session.ManagerOptions{
+				Transport:        ssh.Transport{Launcher: launcher, ReadinessTimeout: time.Second, AskpassProgram: "/usr/local/bin/kamui"},
+				MirrorDiscoverer: cliDiscoverer{},
+				MirrorInterval:   time.Hour,
+			})
+			t.Cleanup(func() { _ = manager.Close() })
+			server, err := controller.Start(context.Background(), layout, manager)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = server.Close() })
+
+			answersReader, answersWriter := io.Pipe()
+			messagesReader, messagesWriter := io.Pipe()
+			defer func() { _ = answersWriter.Close() }()
+			var messages []string
+			program := make(chan struct{})
+			go func() {
+				defer close(program)
+				scanner := bufio.NewScanner(messagesReader)
+				for scanner.Scan() {
+					messages = append(messages, scanner.Text())
+					_, _ = io.WriteString(answersWriter, test.reply+"\n")
+				}
+			}()
+			var errorOutput bytes.Buffer
+			command := cliapp.NewCommandWithApplication(kamuiapp.New(layout, nil), cliapp.Streams{
+				In: answersReader, Out: messagesWriter, ErrOut: &errorOutput,
+				Prompter: func(context.Context, askpass.Prompt) (string, error) {
+					t.Error("the terminal prompter answered a --json-prompts request")
+					return "", askpass.ErrDeclined
+				},
+			})
+			err = command.Run(context.Background(), []string{"kamui", "mirror", "--json-prompts", "reyna"})
+			_ = messagesWriter.Close()
+			<-program
+			if (err != nil) != test.wantErr {
+				t.Fatalf("Run error = %v, want error %v; stderr %q", err, test.wantErr, errorOutput.String())
+			}
+			want := `{"prompt":{"id":1,"kind":"secret","text":"Enter passphrase for key '/k': "}}`
+			if len(messages) != 1 || messages[0] != want {
+				t.Fatalf("stdout = %q, want only %q", messages, want)
+			}
+			if !test.wantErr && !strings.Contains(errorOutput.String(), "reyna mirroring enabled") {
+				t.Fatalf("stderr = %q, want the mirror summary", errorOutput.String())
+			}
+			if strings.Contains(errorOutput.String(), "open sesame") {
+				t.Fatalf("stderr %q contains the answer", errorOutput.String())
+			}
+		})
+	}
+}
+
+func TestMirrorRejectsJSONPromptsWithNonInteractive(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	command := cliapp.NewCommandWithApplication(kamuiapp.New(state.NewLayout(t.TempDir()), controllerStartForbidden{t: t}), cliapp.Streams{Out: &output, ErrOut: &output})
+	err := command.Run(context.Background(), []string{"kamui", "mirror", "--json-prompts", "--non-interactive", "reyna"})
+	if err == nil || !strings.Contains(err.Error(), "--json-prompts or --non-interactive") {
+		t.Fatalf("error = %v", err)
 	}
 }

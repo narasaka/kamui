@@ -1,6 +1,6 @@
 # ADR 0013: Relay OpenSSH prompts to the requesting command
 
-- Status: accepted
+- Status: accepted; amended by ADR 0015
 - Date: 2026-10-30
 - Amends: ADR 0003
 

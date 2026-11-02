@@ -126,6 +126,8 @@ jobs:
         if: steps.app_signing.outputs.enabled == 'true'
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          KAMUI_BUILD_COMMIT: ${{ steps.release.outputs.commit }}
+          KAMUI_BUILD_DATE: ${{ steps.release.outputs.build_date }}
           KAMUI_CODESIGN_IDENTITY: ${{ steps.keychain.outputs.identity }}
           APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
           KAMUI_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}

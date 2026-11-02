@@ -54,8 +54,12 @@ type Request struct {
 	// receives a prompt failure instead of a hidden prompt.
 	NonInteractive bool
 	// Prompter answers OpenSSH prompts on the requester's terminal.
-	Prompter    askpass.Prompter
-	Diagnostics io.Writer
+	Prompter askpass.Prompter
+	// PromptStreams reports that this command's standard input and output
+	// carry the JSON prompt protocol, so a controller that the request starts
+	// must not inherit them.
+	PromptStreams bool
+	Diagnostics   io.Writer
 }
 
 // Result is the observable command result.
@@ -203,7 +207,12 @@ func (a *Application) Execute(ctx context.Context, request Request) (Result, err
 		}
 	}
 	if !observes {
-		if err := a.ensureCompatibleController(ctx); err != nil {
+		starter := a.starter
+		if process, ok := starter.(ProcessStarter); ok && request.PromptStreams {
+			process.Stdin, process.Stdout = nil, nil
+			starter = process
+		}
+		if err := a.ensureCompatibleController(ctx, starter); err != nil {
 			return Result{}, err
 		}
 	}
@@ -241,7 +250,7 @@ func withoutController(destination session.Destination, request Request) (Result
 	return Result{}, fmt.Errorf("no Kamui session for %s", destination)
 }
 
-func (a *Application) ensureCompatibleController(ctx context.Context) error {
+func (a *Application) ensureCompatibleController(ctx context.Context, starter Starter) error {
 	identity, err := a.client.Identity(ctx)
 	if err == nil && identitiesMatch(identity, a.identity) {
 		return nil
@@ -278,7 +287,7 @@ func (a *Application) ensureCompatibleController(ctx context.Context) error {
 		}
 	}
 
-	if err := a.starter.Start(ctx, a.layout); err != nil && !strings.Contains(err.Error(), "another Kamui controller") {
+	if err := starter.Start(ctx, a.layout); err != nil && !strings.Contains(err.Error(), "another Kamui controller") {
 		return fmt.Errorf("start Kamui controller: %w", err)
 	}
 	identity, err = a.waitForController(ctx, true)
@@ -391,6 +400,7 @@ func controllerUnavailable(err error) bool {
 }
 
 // ProcessStarter starts the hidden controller command using the current binary.
+// Nil streams connect the controller to the null device.
 type ProcessStarter struct {
 	Executable string
 	Stdin      io.Reader

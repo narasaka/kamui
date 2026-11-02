@@ -10,7 +10,7 @@ set -f
 # * also matches /.
 filters='
 go             *.go go.mod go.sum .golangci* Makefile cmd/* internal/* integration/* scripts/* Casks/* macos/Resources/*
-macos-app      macos/* Makefile scripts/build-macos-app.sh Casks/* cmd/* internal/app/* internal/cliapp/* internal/session/*
+macos-app      macos/* Makefile scripts/build-macos-app.sh Casks/* go.mod go.sum cmd/* internal/*
 browser-smoke  go.mod go.sum cmd/* internal/* integration/*
 site           site/* docs/* *.md
 '

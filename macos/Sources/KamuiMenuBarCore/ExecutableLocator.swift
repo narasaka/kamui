@@ -2,6 +2,10 @@ import Foundation
 
 /// Finds the kamui CLI and the environment it should run with.
 ///
+/// The app prefers the kamui that the user's terminal runs, so both use one
+/// build and one controller. It falls back to the copy inside the app, which
+/// lets the app work without a separately installed CLI.
+///
 /// Apps launched from Finder or at login receive a minimal PATH. The CLI and
 /// the controller it may start should see the same PATH and SSH agent as the
 /// user's login shell, so the app adopts those values from a login shell.
@@ -63,8 +67,9 @@ public struct ExecutableLocator: Sendable {
     }
 
     /// Returns an explicit executable when one is configured, otherwise the
-    /// first kamui on PATH or in a common installation directory.
-    public func locate(override: String?, environment: [String: String]) -> URL? {
+    /// first kamui on PATH or in a common installation directory, otherwise
+    /// the bundled copy.
+    public func locate(override: String?, environment: [String: String], bundled: URL? = nil) -> URL? {
         if let override, !override.isEmpty {
             let path = Self.expandingTilde(override, environment: environment)
             return isExecutable(path) ? URL(fileURLWithPath: path) : nil
@@ -76,7 +81,18 @@ public struct ExecutableLocator: Sendable {
                 return URL(fileURLWithPath: path)
             }
         }
+        if let bundled, isExecutable(bundled.path) {
+            return bundled
+        }
         return nil
+    }
+
+    /// The kamui inside an app bundle, which the build script places in
+    /// `Contents/Helpers`. The app executable's own name differs only in
+    /// case, so the CLI cannot share `Contents/MacOS` on a case-insensitive
+    /// volume.
+    public static func bundledExecutable(in bundle: URL) -> URL {
+        bundle.appendingPathComponent("Contents/Helpers/kamui")
     }
 
     static func expandingTilde(_ path: String, environment: [String: String]) -> String {

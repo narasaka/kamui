@@ -32,7 +32,7 @@ struct MenuContent: View {
             SessionMenu(model: model, session: session)
         }
         ForEach(model.pending.subtracting(model.sessions.map(\.destination)).sorted(), id: \.self) { destination in
-            Text("\(destination) — Connecting…")
+            Text("\(destination) — \(Self.truncated(model.notices[destination] ?? "Connecting…", limit: 50))")
         }
 
         Divider()
@@ -54,8 +54,12 @@ struct MenuContent: View {
         Divider()
 
         Menu("kamui Executable") {
-            Text(model.executable?.path ?? "Not found")
+            Text(model.usesBundledExecutable ? "Bundled with Kamui" : model.executable?.path ?? "Not found")
             Button("Choose…") { model.chooseExecutable() }
+            if model.bundledExecutable != nil {
+                Button("Use Bundled kamui") { model.useBundledExecutable() }
+                    .disabled(model.usesBundledExecutable && model.usesExecutableOverride)
+            }
             Button("Find Automatically") { model.useAutomaticExecutable() }
                 .disabled(!model.usesExecutableOverride)
         }
@@ -79,8 +83,9 @@ struct SessionMenu: View {
 
     var body: some View {
         Menu {
-            if session.state.needsTerminal {
-                Button("Reconnect in Terminal…") { model.openInTerminal(session.destination) }
+            if session.state.canReconnect {
+                Button("Reconnect") { model.connect(session.destination) }
+                    .disabled(model.pending.contains(session.destination))
                 Divider()
             }
             if session.mirror.mirroredPorts.isEmpty {

@@ -42,7 +42,8 @@ The successful primary command ends with the exact `kamui stop SSH_DESTINATION`
 command needed to disconnect the session.
 OpenSSH passphrase, host-key, and other prompts appear in the terminal that
 ran the command, even when the background controller was started elsewhere,
-such as by the menu bar app or another terminal. The controller runs OpenSSH
+such as by the menu bar app or another terminal. Prompts for a connection the
+menu bar app starts appear in the app. The controller runs OpenSSH
 with `SSH_ASKPASS` set to the `kamui` executable and relays each prompt to the
 requesting command, which reads the answer from its terminal. Answers,
 including `yes` for a new host key, are read without echo and are never
@@ -66,10 +67,32 @@ the local machine.
 `BatchMode=yes`. A destination that needs a passphrase, host-key decision, or
 other prompt fails promptly instead of waiting. Diagnostics and warnings, such
 as enabled agent forwarding, still reach stderr. Rerun the command without the
-flag in a terminal to answer the prompt. The macOS menu bar app uses
-`kamui mirror --non-interactive` because it has no terminal; the explicit
-`mirror` command keeps a destination named like a subcommand, such as `status`,
-a destination. `kamui mirror` accepts the same flags as the primary command.
+flag in a terminal to answer the prompt. `kamui mirror` accepts the same flags
+as the primary command.
+
+`kamui mirror --json-prompts SSH_DESTINATION` lets a program without a
+terminal, such as the macOS menu bar app, answer OpenSSH's prompts. Instead of
+the terminal, the command writes each prompt to stdout as one JSON line and
+reads answers from stdin, one JSON line each:
+
+```text
+stdout: {"prompt":{"id":1,"kind":"secret","text":"Enter passphrase for key '/k': "}}
+stdin:  {"id":1,"answer":"open sesame"}
+stdout: {"prompt":{"id":2,"kind":"confirm","text":"Allow use of key?"}}
+stdin:  {"id":2,"declined":true}
+stdout: {"cancel":3}
+```
+
+`kind` is `secret` for typed input, which should always be hidden, `confirm`
+for a yes-or-no question, or `notice` for information that needs no reply.
+`{"cancel":N}` withdraws a prompt whose connection attempt ended; a later reply
+to it is ignored. A line break ends an answer. Closing stdin, or writing a line
+that isn't a reply, abandons the connection. Stdout carries only these lines;
+the mirror summary, diagnostics, and warnings go to stderr. A controller that
+the command starts doesn't inherit its stdin or stdout, so both close when the
+command exits. The flag can't be combined with `--non-interactive`. The menu
+bar app uses the explicit `mirror` command, which keeps a destination named
+like a subcommand, such as `status`, a destination.
 
 The controller relays OpenSSH diagnostics from the initial tunnel connection
 and listener-discovery command to the calling terminal as they arrive. This

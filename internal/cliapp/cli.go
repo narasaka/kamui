@@ -154,25 +154,43 @@ func NewCommandWithApplication(application *kamuiapp.Application, streams Stream
 			Name:      "mirror",
 			Usage:     "mirror remote TCP listeners on local loopback",
 			ArgsUsage: "SSH_DESTINATION",
-			Flags:     mirrorPortFlags(),
+			Flags: append(mirrorPortFlags(), &cli.BoolFlag{
+				Name:  "json-prompts",
+				Usage: "relay OpenSSH prompts as JSON lines on stdout and read answers from stdin",
+				Local: true,
+			}),
 			Action: func(ctx context.Context, cmd *cli.Command) error {
 				if err := exactlyOneDestination(cmd); err != nil {
 					return err
 				}
+				jsonPrompts := cmd.Bool("json-prompts")
+				if jsonPrompts && cmd.Bool("non-interactive") {
+					return fmt.Errorf("use either --json-prompts or --non-interactive, not both")
+				}
 				if application == nil {
 					return notImplemented("mirror")
+				}
+				requestPrompter, summary := prompter, streams.Out
+				if jsonPrompts {
+					// Standard output carries only the prompt protocol.
+					input := streams.In
+					if input == nil {
+						input = strings.NewReader("")
+					}
+					requestPrompter, summary = askpass.JSONLines(input, streams.Out), progressWriter
 				}
 				result, err := application.Execute(ctx, kamuiapp.Request{
 					Operation: kamuiapp.Mirror, Destination: cmd.Args().First(),
 					IncludePorts: cmd.StringSlice("include-port"), ExcludePorts: cmd.StringSlice("exclude-port"),
 					NonInteractive: cmd.Bool("non-interactive"),
-					Prompter:       prompter,
+					Prompter:       requestPrompter,
+					PromptStreams:  jsonPrompts,
 					Diagnostics:    streams.ErrOut,
 				})
 				if err != nil {
 					return err
 				}
-				_, err = fmt.Fprintf(streams.Out, "%s mirroring enabled; mirrored %s; excluded %s; conflicts %s\n",
+				_, err = fmt.Fprintf(summary, "%s mirroring enabled; mirrored %s; excluded %s; conflicts %s\n",
 					cmd.Args().First(), formatPorts(result.Session.Mirror.MirroredPorts), formatPorts(result.Session.Mirror.ExcludedPorts), formatConflicts(result.Session.Mirror.ConflictedPorts))
 				return err
 			},

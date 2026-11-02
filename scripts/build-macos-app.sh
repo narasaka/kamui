@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Builds the universal Kamui menu bar app and its release archive.
 #
+# The app carries a universal kamui CLI in Contents/Helpers. It uses the same
+# link-time version, KAMUI_BUILD_COMMIT, and KAMUI_BUILD_DATE as the release's
+# CLI binaries and Homebrew formula, so all of them share one controller build
+# identity.
+#
 # Signing uses KAMUI_CODESIGN_IDENTITY, or an ad-hoc signature when unset.
 # Notarization runs when KAMUI_NOTARY_KEY (an App Store Connect API key file),
 # KAMUI_NOTARY_KEY_ID, and KAMUI_NOTARY_ISSUER are all set; it requires a
@@ -31,24 +36,43 @@ if [[ -n "${KAMUI_NOTARY_KEY:-}" || -n "${KAMUI_NOTARY_KEY_ID:-}" || -n "${KAMUI
   notarize=true
 fi
 
+commit="${KAMUI_BUILD_COMMIT:-$(git -C "$repository_root" rev-parse HEAD)}"
+build_date="${KAMUI_BUILD_DATE:-unknown}"
+ldflags="-s -w -buildid= -X github.com/narasaka/kamui/internal/version.Version=${version} -X github.com/narasaka/kamui/internal/version.Commit=${commit} -X github.com/narasaka/kamui/internal/version.BuildDate=${build_date}"
+helper_build="$(mktemp -d)"
+trap 'rm -rf "$helper_build"' EXIT
+for architecture in arm64 amd64; do
+  (
+    cd "$repository_root"
+    CGO_ENABLED=0 GOOS=darwin GOARCH="$architecture" \
+      go build -trimpath -buildvcs=false -ldflags "$ldflags" -o "${helper_build}/kamui-${architecture}" ./cmd/kamui
+  )
+done
+
 package_root="${repository_root}/macos"
 swift build --package-path "$package_root" -c release --arch arm64 --arch x86_64 --product KamuiMenuBar
 binary="$(swift build --package-path "$package_root" -c release --arch arm64 --arch x86_64 --show-bin-path)/KamuiMenuBar"
 
 app="${output_root}/Kamui.app"
 rm -rf "$app"
-mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
+mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Helpers" "${app}/Contents/Resources"
 cp "$binary" "${app}/Contents/MacOS/Kamui"
+lipo -create -output "${app}/Contents/Helpers/kamui" "${helper_build}/kamui-arm64" "${helper_build}/kamui-amd64"
 cp "${package_root}/Resources/AppIcon.icns" "${app}/Contents/Resources/AppIcon.icns"
 sed "s/KAMUI_VERSION/${version}/g" "${package_root}/Resources/Info.plist" > "${app}/Contents/Info.plist"
 plutil -lint "${app}/Contents/Info.plist" >/dev/null
 
+# Sign the nested CLI before the app that seals it.
+helper="${app}/Contents/Helpers/kamui"
 if [[ "$identity" == "-" ]]; then
+  codesign --force --identifier io.github.narasaka.kamui.cli --sign - "$helper"
   codesign --force --sign - "$app"
 else
+  codesign --force --options runtime --timestamp --identifier io.github.narasaka.kamui.cli --sign "$identity" "$helper"
   codesign --force --options runtime --timestamp --sign "$identity" "$app"
 fi
-codesign --verify --strict --verbose=2 "$app"
+codesign --verify --strict --deep --verbose=2 "$app"
+"$helper" --version >/dev/null
 
 archive="${output_root}/Kamui_${version}_macos.zip"
 rm -f "$archive"
