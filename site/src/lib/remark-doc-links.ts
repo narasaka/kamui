@@ -2,24 +2,20 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import GithubSlugger from "github-slugger";
 import type { Root } from "mdast";
+import { fromMarkdown } from "mdast-util-from-markdown";
+import { toString } from "mdast-util-to-string";
 import { visit } from "unist-util-visit";
-import { DOCS, REPO_URL } from "./docs";
+import { DOCS, REPO_URL } from "./docs.ts";
 
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
 
-function headingIds(file: string): Set<string> {
+/** Heading ids in a Markdown tree, slugged the way the rendered page names them. */
+export function headingIds(tree: Root): Set<string> {
   const slugger = new GithubSlugger();
   const ids = new Set<string>();
-  let fenced = false;
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    if (line.startsWith("```")) fenced = !fenced;
-    const heading = !fenced && /^#{1,6}\s+(.*)$/.exec(line);
-    if (heading) {
-      // Slug the heading's visible text, as Astro does: drop code ticks and link targets.
-      const text = heading[1].replaceAll("`", "").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1");
-      ids.add(slugger.slug(text));
-    }
-  }
+  visit(tree, "heading", (heading) => {
+    ids.add(slugger.slug(toString(heading)));
+  });
   return ids;
 }
 
@@ -32,10 +28,19 @@ export function remarkDocLinks({ repoRoot }: { repoRoot: string }) {
   const published = new Map<string, string>(DOCS.map((doc) => [`docs/${doc.slug}.md`, doc.slug]));
 
   return (tree: Root) => {
+    const ownIds = headingIds(tree);
+
     visit(tree, (node) => {
       if (node.type !== "link" && node.type !== "definition") return;
       const href = node.url;
-      if (!href || href.startsWith("#") || SCHEME.test(href)) return;
+      if (!href || SCHEME.test(href)) return;
+
+      if (href.startsWith("#")) {
+        if (href.length > 1 && !ownIds.has(href.slice(1))) {
+          throw new Error(`docs link "${href}" points at a missing heading`);
+        }
+        return;
+      }
 
       const [target, hash] = href.split("#", 2);
       const relative = path.posix.normalize(path.posix.join("docs", target)).replace(/\/$/, "");
@@ -43,7 +48,7 @@ export function remarkDocLinks({ repoRoot }: { repoRoot: string }) {
       if (relative.startsWith("..") || !existsSync(absolute)) {
         throw new Error(`docs link "${href}" points at a missing file`);
       }
-      if (hash && relative.endsWith(".md") && !headingIds(absolute).has(hash)) {
+      if (hash && relative.endsWith(".md") && !headingIds(fromMarkdown(readFileSync(absolute, "utf8"))).has(hash)) {
         throw new Error(`docs link "${href}" points at a missing heading`);
       }
 

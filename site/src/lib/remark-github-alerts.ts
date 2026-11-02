@@ -34,8 +34,8 @@ export function remarkGithubAlerts() {
       node.children.unshift(title);
       node.data = {
         ...node.data,
-        hName: "aside",
-        hProperties: { className: ["alert", `alert-${kind.toLowerCase()}`] },
+        hName: "div",
+        hProperties: { className: ["alert", `alert-${kind.toLowerCase()}`], role: "note" },
       };
     });
   };
