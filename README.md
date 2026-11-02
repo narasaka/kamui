@@ -104,7 +104,7 @@ your terminal and Kamui asks you there. See [the menu bar app](docs/menu-bar-app
 ## Dedicated browser
 
 `kamui browser foo` opens an isolated browser profile whose `localhost` points
-at the remote machine, without opening any ports on your laptop. See
+at the remote machine. It doesn't open ports for other programs on your laptop. See
 [the CLI reference](docs/cli.md#dedicated-browser-command) for its modes and
 caveats.
 
