@@ -521,13 +521,29 @@
         align-self: center;
       }
 
-      .demo-log {
+      .demo-foot {
+        display: flex;
+        gap: 12px;
         padding: 8px 12px;
         border-top: 1px solid var(--border);
         color: var(--text-muted);
+      }
+
+      .demo-log {
+        flex: 1;
+        min-width: 0;
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+
+      .demo-toggle {
+        color: var(--text-muted);
+        transition: color 150ms;
+      }
+
+      .demo-toggle:hover {
+        color: var(--text-primary);
       }
 
       /* lists */
@@ -614,8 +630,8 @@
           </button>
         </div>
 
-        <div class="demo mt-6" aria-label="Animation: ports opening on the remote machine appear on your laptop" role="img">
-          <div class="demo-grid" id="demo">
+        <div class="demo mt-6">
+          <div class="demo-grid" id="demo" role="img" aria-label="Animation: ports opening on the remote machine appear on your laptop">
             <div class="demo-head">foo <span class="muted">· 127.0.0.1</span></div>
             <div class="demo-head mid">ssh</div>
             <div class="demo-head">laptop <span class="muted">· localhost</span></div>
@@ -626,7 +642,10 @@
             <div class="demo-pad"></div>
             <div class="demo-pad"></div>
           </div>
-          <div class="demo-log" id="demo-log">$ kamui foo</div>
+          <div class="demo-foot">
+            <span class="demo-log" id="demo-log">$ kamui foo</span>
+            <button class="demo-toggle" id="demo-toggle" type="button" hidden>pause</button>
+          </div>
         </div>
 
         <div class="row mt-3">
@@ -876,9 +895,26 @@ To disconnect, run: kamui stop foo</pre>
           }, delay);
         };
 
-        const observer = new IntersectionObserver(([entry]) => {
+        let visible = false;
+        let paused = false;
+        const sync = () => {
           clearTimeout(timer);
-          if (entry.isIntersecting) tick();
+          if (visible && !paused) tick();
+        };
+
+        const toggle = document.getElementById("demo-toggle");
+        if (toggle) {
+          toggle.hidden = false;
+          toggle.addEventListener("click", () => {
+            paused = !paused;
+            toggle.textContent = paused ? "play" : "pause";
+            sync();
+          });
+        }
+
+        const observer = new IntersectionObserver(([entry]) => {
+          visible = entry.isIntersecting;
+          sync();
         });
         observer.observe(grid);
       })();
