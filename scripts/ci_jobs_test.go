@@ -1,7 +1,9 @@
 package scripts_test
 
 import (
+	"bytes"
 	"encoding/json"
+	"io"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -26,6 +28,15 @@ func TestCIJobsSelectsGroupsForChangedPaths(t *testing.T) {
 		{name: "menu bar app source", paths: []string{"macos/Sources/KamuiMenuBar/AppModel.swift"}, want: []string{"macos-app"}},
 		{name: "menu bar app bundle resources checked by Go tests", paths: []string{"macos/Resources/Info.plist"}, want: []string{"go", "macos-app"}},
 		{name: "lint configuration", paths: []string{".golangci.yml"}, want: []string{"go"}},
+		{name: "Go module", paths: []string{"go.mod"}, want: []string{"go", "browser-smoke"}},
+		{name: "Go checksums", paths: []string{"go.sum"}, want: []string{"go", "browser-smoke"}},
+		{name: "CLI entry point", paths: []string{"cmd/kamui/main.go"}, want: allCIGroups},
+		{name: "session status reported by status --json", paths: []string{"internal/session/session.go"}, want: allCIGroups},
+		{name: "non-interactive mirroring used by the menu bar app", paths: []string{"internal/app/app.go"}, want: allCIGroups},
+		{name: "integration tests", paths: []string{"integration/browser_test.go"}, want: []string{"go", "browser-smoke"}},
+		{name: "Makefile", paths: []string{"Makefile"}, want: []string{"go", "macos-app"}},
+		{name: "menu bar app build script", paths: []string{"scripts/build-macos-app.sh"}, want: []string{"go", "macos-app"}},
+		{name: "menu bar app cask", paths: []string{"Casks/kamui-app.rb"}, want: []string{"go", "macos-app"}},
 		{name: "workflow", paths: []string{"docs/cli.md", ".github/workflows/ci.yml"}, want: allCIGroups},
 		{name: "job selection script", paths: []string{"scripts/ci-jobs.sh"}, want: allCIGroups},
 		{name: "path without a filter", paths: []string{"docs/cli.md", "tools/generate.sh"}, want: allCIGroups},
@@ -39,6 +50,48 @@ func TestCIJobsSelectsGroupsForChangedPaths(t *testing.T) {
 
 	if got := runCIJobs(t, "", "--all"); !slices.Equal(got, allCIGroups) {
 		t.Fatalf("ci-jobs.sh --all selected %q, want %q", got, allCIGroups)
+	}
+}
+
+func TestCIJobsReadsEveryPathAfterSelectingAllGroups(t *testing.T) {
+	command := exec.Command(filepath.Join(mustGetwd(t), "ci-jobs.sh"))
+	stdin, err := command.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Start(); err != nil {
+		t.Fatal(err)
+	}
+	// More than a pipe buffer of paths after one that selects every group.
+	paths := ".github/workflows/ci.yml\n" + strings.Repeat("docs/cli.md\n", 20000)
+	_, writeErr := io.WriteString(stdin, paths)
+	closeErr := stdin.Close()
+	if err := command.Wait(); err != nil {
+		t.Fatalf("ci-jobs.sh failed: %v\n%s", err, output.String())
+	}
+	if writeErr != nil || closeErr != nil {
+		t.Fatalf("ci-jobs.sh stopped reading its input early: write %v, close %v", writeErr, closeErr)
+	}
+	if got := strings.TrimSpace(output.String()); got != `jobs=["go","macos-app","browser-smoke"]` {
+		t.Fatalf("ci-jobs.sh printed %q", got)
+	}
+}
+
+func TestCIWorkflowSelectsJobsFromThePullRequestDiff(t *testing.T) {
+	workflow := readRepositoryFile(t, ".github", "workflows", "ci.yml")
+	for _, want := range []string{
+		"          fetch-depth: 2\n",
+		"            git diff --name-only --no-renames HEAD^1 HEAD | scripts/ci-jobs.sh\n",
+		"            scripts/ci-jobs.sh --all\n",
+		"    if: always()\n    needs: [changes,",
+		"        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')\n        run: exit 1\n",
+	} {
+		if !strings.Contains(workflow, want) {
+			t.Fatalf("ci.yml no longer contains %q", strings.TrimSpace(want))
+		}
 	}
 }
 

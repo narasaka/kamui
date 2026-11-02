@@ -57,11 +57,13 @@ case "$#:${1:-}" in
 esac
 
 if [[ "$select_all" == false ]]; then
+  # Read every path even after selecting all groups: stopping early would break
+  # the pipe and fail the `git diff` that feeds this script.
   while IFS= read -r path || [[ -n "$path" ]]; do
-    [[ -n "$path" ]] || continue
+    [[ -n "$path" && "$select_all" == false ]] || continue
     if matches "$path" "$ci_paths"; then
       select_all=true
-      break
+      continue
     fi
     covered=false
     while read -r group globs; do
@@ -73,7 +75,6 @@ if [[ "$select_all" == false ]]; then
     done <<<"$filters"
     if [[ "$covered" == false ]] && ! matches "$path" "$unchecked_paths"; then
       select_all=true
-      break
     fi
   done
 fi
