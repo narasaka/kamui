@@ -14,7 +14,8 @@ export function headingIds(tree: Root): Set<string> {
   const slugger = new GithubSlugger();
   const ids = new Set<string>();
   visit(tree, "heading", (heading) => {
-    ids.add(slugger.slug(toString(heading)));
+    // Astro's heading ids skip raw HTML tags and image alt text.
+    ids.add(slugger.slug(toString(heading, { includeHtml: false, includeImageAlt: false })));
   });
   return ids;
 }

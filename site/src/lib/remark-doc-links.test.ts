@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import type { Root } from "mdast";
+import { createMarkdownProcessor } from "@astrojs/markdown-remark";
 import { fromMarkdown } from "mdast-util-from-markdown";
 import { visit } from "unist-util-visit";
 import { headingIds, remarkDocLinks } from "./remark-doc-links.ts";
@@ -61,4 +62,21 @@ test("heading ids follow the parsed Markdown", () => {
     headingIds(fromMarkdown(markdown)),
     new Set(["reconnecting", "setext-heading", "usage-and-kamui-foo", "usage-and-kamui-foo-1"]),
   );
+});
+
+test("heading ids match the ones Astro renders", async () => {
+  const markdown = [
+    "## Reconnecting ##",
+    "Setext heading",
+    "==============",
+    "~~~sh\n# not a heading\n~~~",
+    "## [Usage](cli.md) and `kamui foo`",
+    "## Usage and kamui foo",
+    "## Use <code>kamui</code>",
+    "## Press <kbd>Ctrl</kbd> now",
+    "## ![Logo](logo.png) Usage",
+  ].join("\n\n");
+  const processor = await createMarkdownProcessor({ syntaxHighlight: false });
+  const { metadata } = await processor.render(markdown);
+  assert.deepEqual(headingIds(fromMarkdown(markdown)), new Set(metadata.headings.map((heading) => heading.slug)));
 });
