@@ -18,6 +18,9 @@ final class AppModel: ObservableObject {
     @Published private(set) var executable: URL?
     @Published private(set) var launchesAtLogin = SMAppService.mainApp.status == .enabled
 
+    /// Connections the user stopped while they were starting, whose failure
+    /// is expected rather than reported.
+    private var stopping: Set<String> = []
     private var environment: [String: String] = ProcessInfo.processInfo.environment
     private var refreshing = false
     private var poller: Task<Void, Never>?
@@ -131,9 +134,10 @@ final class AppModel: ObservableObject {
             answer: { prompt in
                 let reply = await PromptPanel.ask(prompt, destination: destination)
                 if case .decline = reply, prompt.kind != .confirm, !Task.isCancelled {
-                    // Cancel means stop connecting. A declined answer alone
-                    // makes OpenSSH try an empty one and ask again.
-                    await self.stop(destination)
+                    // Cancel means stop connecting. Stopping first ends the
+                    // attempt, so OpenSSH never tries an empty answer and
+                    // asks again.
+                    await self.stopAndWait(destination)
                 }
                 return reply
             },
@@ -143,6 +147,7 @@ final class AppModel: ObservableObject {
             defer {
                 pending.remove(destination)
                 notices[destination] = nil
+                stopping.remove(destination)
             }
             do {
                 let warnings = try await client.connect(destination, prompts: prompts) { url in
@@ -152,9 +157,9 @@ final class AppModel: ObservableObject {
                 if !warnings.isEmpty {
                     showDetails(title: "Connected to \(destination)", detail: warnings.joined(separator: "\n"))
                 }
-            } catch {
+            } catch where !stopping.contains(destination) {
                 showDetails(title: "Could not connect to \(destination)", detail: error.localizedDescription)
-            }
+            } catch {}
             await refresh()
         }
     }
@@ -176,19 +181,25 @@ final class AppModel: ObservableObject {
     }
 
     func stop(_ destination: String) {
+        Task { await stopAndWait(destination) }
+    }
+
+    func stopAndWait(_ destination: String) async {
         guard let client else { return }
-        Task {
-            do {
-                try await client.stop(destination)
-            } catch {
-                presentError(error)
-            }
-            await refresh()
+        if pending.contains(destination) {
+            stopping.insert(destination)
         }
+        do {
+            try await client.stop(destination)
+        } catch {
+            presentError(error)
+        }
+        await refresh()
     }
 
     func stopAll() {
         guard let client else { return }
+        stopping.formUnion(pending)
         Task {
             do {
                 try await client.stopAll()
