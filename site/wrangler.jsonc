@@ -11,6 +11,8 @@
   },
   "routes": [{ "pattern": "kamui.narasaka.dev", "custom_domain": true }],
   "workers_dev": false,
-  // Workers Builds runs `wrangler preview` for branches other than main.
+  // Workers Builds runs `wrangler preview` for branches other than main; each
+  // branch gets <branch>-kamui.<subdomain>.workers.dev.
+  "preview_urls": true,
   "previews": {},
 }
