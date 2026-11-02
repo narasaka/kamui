@@ -114,6 +114,14 @@ final class KamuiClientTests: XCTestCase {
         XCTAssertNil(KamuiClient.signInURL(in: "Welcome! See https://example.com"))
     }
 
+    func testOnlyTailscaleLoginHostOpensWithoutConfirmation() throws {
+        XCTAssertTrue(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://login.tailscale.com/a/abc123"))))
+        XCTAssertTrue(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://LOGIN.tailscale.com/a/abc123"))))
+        XCTAssertFalse(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://headscale.example.com/a/abc123"))))
+        XCTAssertFalse(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://login.tailscale.com.evil.example/a/abc123"))))
+        XCTAssertFalse(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://login.tailscale.com@evil.example/a/abc123"))))
+    }
+
     func testConnectRejectsOptionLikeDestinationWithoutRunningKamui() async {
         let runner = FakeRunner { _ in CommandResult(exitStatus: 0) }
         let client = KamuiClient(executable: executable, environment: [:], runner: runner)

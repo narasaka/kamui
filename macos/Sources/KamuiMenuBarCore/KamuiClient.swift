@@ -75,6 +75,13 @@ public struct KamuiClient: Sendable {
         return url
     }
 
+    /// Reports whether a sign-in link goes to Tailscale's own login service,
+    /// which the app opens without asking. The SSH server chooses the link, so
+    /// the app confirms any other host, such as a self-hosted Headscale server.
+    public static func isTailscaleLogin(_ url: URL) -> Bool {
+        url.host?.lowercased() == "login.tailscale.com"
+    }
+
     static func failureMessage(_ result: CommandResult) -> String {
         let lines = result.standardError
             .split(separator: "\n", omittingEmptySubsequences: false)
