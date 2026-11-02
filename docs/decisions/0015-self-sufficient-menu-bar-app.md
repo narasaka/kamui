@@ -110,6 +110,11 @@ and the CLI lives elsewhere, the app uses its bundled copy and the two routes
 can replace each other's controller. The app reports a controller from another
 build, and choosing the executable explicitly resolves it.
 
+A controller started by the bundled copy runs from inside `Kamui.app` and
+uses that path for its askpass helper. If the app moves or is upgraded while
+that controller keeps running, background reconnects cannot reach the helper
+until the next app command replaces the controller.
+
 Keeping the cask's formula dependency avoids a conflict for users who already
 installed the formula. A later change could have the cask link the bundled CLI
 instead and drop the dependency.

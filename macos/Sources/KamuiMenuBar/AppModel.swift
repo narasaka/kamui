@@ -128,7 +128,15 @@ final class AppModel: ObservableObject {
         pending.insert(destination)
         notices[destination] = nil
         let prompts = SSHPromptHandler(
-            answer: { prompt in await PromptPanel.ask(prompt, destination: destination) },
+            answer: { prompt in
+                let reply = await PromptPanel.ask(prompt, destination: destination)
+                if case .decline = reply, prompt.kind != .confirm, !Task.isCancelled {
+                    // Cancel means stop connecting. A declined answer alone
+                    // makes OpenSSH try an empty one and ask again.
+                    await self.stop(destination)
+                }
+                return reply
+            },
             notice: { text in Task { @MainActor in self.notices[destination] = text } }
         )
         Task {

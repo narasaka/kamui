@@ -62,14 +62,14 @@ public final class CommandInput: @unchecked Sendable {
 
     /// Stops accepting writes and closes the destination.
     public func close() {
-        let closer = lock.withLock {
+        let close = lock.withLock {
             defer {
                 writer = nil
-                closer = nil
+                self.closer = nil
             }
-            return closer
+            return self.closer
         }
-        closer?()
+        close?()
     }
 
     /// Pauses the command's timeout until a matching `releaseTimeout`.

@@ -31,9 +31,10 @@ second factor, the app asks in a window that names the host. Typed answers are
 always hidden, including `yes` for a new host key. The app passes each answer
 to Kamui in memory and never stores or logs it. Other sessions keep working
 while the window is open, and the window closes on its own if the connection
-attempt ends, for example when you run `kamui stop foo`. A notice such as
-"Confirm user presence for key" appears in the menu next to the connecting
-host.
+attempt ends, for example when you run `kamui stop foo`. **Cancel** stops
+connecting to that host. A notice such as "Confirm user presence for key"
+appears in the menu next to the connecting host, which you can also stop from
+there.
 
 A Tailscale SSH check opens its "To authenticate, visit" link in your browser
 while the connection waits. The link must use HTTPS. Because the SSH server

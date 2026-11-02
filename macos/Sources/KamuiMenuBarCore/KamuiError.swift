@@ -25,7 +25,7 @@ public enum KamuiError: Error, Equatable, LocalizedError, Sendable {
         case .unsupportedStatusFormat(let format):
             "kamui reports status format \(format), which this app does not understand. Update the Kamui app."
         case .promptsUnsupported(let path):
-            "The kamui at \(path) is older than this app and can't pass SSH prompts to it. Update it, or choose Use Bundled kamui under kamui Executable."
+            "The kamui at \(path) is older than this app and can't pass SSH prompts to it. Update it, or choose Use Bundled kamui under kamui Executable. Switching restarts Kamui's background controller and ends the sessions it is running, so updating the terminal's kamui is usually better."
         case .commandFinished:
             "kamui finished before the answer could be sent."
         }
