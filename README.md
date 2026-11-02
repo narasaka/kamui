@@ -136,7 +136,9 @@ make macos-app         # build dist/Kamui.app
 
 `site/` is the Astro site for [kamui.narasaka.dev](https://kamui.narasaka.dev).
 It renders the user-facing pages in `docs/` at build time, so editing a doc
-updates the site. Run `pnpm install && pnpm dev` there to preview it.
+updates the site. Run `pnpm install && pnpm dev` there to preview it. On Vercel,
+set the project's root directory to `site` and keep "Include files outside the
+root directory in the Build Step" enabled, since the build reads `docs/`.
 
 Commit subjects use `scope: description`
 ([Scoped Commits](https://scopedcommits.com/)).

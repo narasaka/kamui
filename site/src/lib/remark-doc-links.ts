@@ -14,7 +14,11 @@ function headingIds(file: string): Set<string> {
   for (const line of readFileSync(file, "utf8").split("\n")) {
     if (line.startsWith("```")) fenced = !fenced;
     const heading = !fenced && /^#{1,6}\s+(.*)$/.exec(line);
-    if (heading) ids.add(slugger.slug(heading[1].replaceAll("`", "")));
+    if (heading) {
+      // Slug the heading's visible text, as Astro does: drop code ticks and link targets.
+      const text = heading[1].replaceAll("`", "").replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1");
+      ids.add(slugger.slug(text));
+    }
   }
   return ids;
 }
