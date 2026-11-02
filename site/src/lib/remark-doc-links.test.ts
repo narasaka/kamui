@@ -67,8 +67,7 @@ test("heading ids follow the parsed Markdown", () => {
 test("heading ids match the ones Astro renders", async () => {
   const markdown = [
     "## Reconnecting ##",
-    "Setext heading",
-    "==============",
+    "Setext heading\n==============",
     "~~~sh\n# not a heading\n~~~",
     "## [Usage](cli.md) and `kamui foo`",
     "## Usage and kamui foo",
