@@ -104,7 +104,7 @@ your terminal and Kamui asks you there. See [the menu bar app](docs/menu-bar-app
 ## Dedicated browser
 
 `kamui browser foo` opens an isolated browser profile whose `localhost` points
-at the remote machine, without opening any ports on your laptop. See
+at the remote machine. It doesn't open ports for other programs on your laptop. See
 [the CLI reference](docs/cli.md#dedicated-browser-command) for its modes and
 caveats.
 
@@ -133,6 +133,12 @@ make check             # gofmt, golangci-lint, go vet, go test -race
 make check-macos-app   # Swift tests for the menu bar app
 make macos-app         # build dist/Kamui.app
 ```
+
+`site/` is the Astro site for [kamui.narasaka.dev](https://kamui.narasaka.dev).
+It renders the user-facing pages in `docs/` at build time, so editing a doc
+updates the site. Run `pnpm install && pnpm dev` there to preview it. Cloudflare
+Workers Builds deploys it: pushes to `main` that touch `site/` or `docs/` go to
+production, and other branches get a preview URL.
 
 Commit subjects use `scope: description`
 ([Scoped Commits](https://scopedcommits.com/)).

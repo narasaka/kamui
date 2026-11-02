@@ -1,0 +1,20 @@
+---
+import lucide from "@iconify-json/lucide/icons.json";
+
+interface Props {
+  name: keyof typeof lucide.icons;
+  class?: string;
+}
+
+const { name, class: className } = Astro.props;
+const icon = lucide.icons[name];
+const size = lucide.width ?? 24;
+---
+
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  viewBox={`0 0 ${size} ${size}`}
+  class={className}
+  aria-hidden="true"
+  set:html={icon.body}
+/>

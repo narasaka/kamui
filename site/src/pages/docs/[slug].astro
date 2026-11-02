@@ -1,0 +1,51 @@
+---
+import { getCollection, render } from "astro:content";
+import Icon from "~/components/Icon.astro";
+import Layout from "~/layouts/Layout.astro";
+import { DOCS, REPO_URL } from "~/lib/docs";
+
+export async function getStaticPaths() {
+  const entries = await getCollection("docs");
+  return DOCS.map((doc) => {
+    const entry = entries.find((candidate) => candidate.id === doc.slug);
+    if (!entry) throw new Error(`docs/${doc.slug}.md is missing`);
+    return { params: { slug: doc.slug }, props: { entry, doc } };
+  });
+}
+
+const { entry, doc } = Astro.props;
+const { Content, headings } = await render(entry);
+const title = headings.find((heading) => heading.depth === 1)?.text ?? doc.label;
+---
+
+<Layout title={`${title} · kamui`} description={doc.description}>
+  <div>
+    <nav aria-label="Docs" class="flex flex-wrap gap-x-4 gap-y-1">
+      {
+        DOCS.map((item) => (
+          <a
+            href={`/docs/${item.slug}`}
+            aria-current={item.slug === doc.slug ? "page" : undefined}
+            class="text-[var(--text-muted)] hover:text-[var(--text-primary)] aria-[current=page]:text-[var(--text-primary)] transition-colors"
+          >
+            {item.label}
+          </a>
+        ))
+      }
+    </nav>
+
+    <article class="prose mt-10">
+      <Content />
+    </article>
+  </div>
+
+  <footer class="border-t border-[var(--border)] pt-10 flex flex-wrap gap-x-4 gap-y-1 text-[var(--text-muted)]">
+    <a
+      class="inline-flex items-center gap-0.5 hover:text-[var(--text-primary)] transition-colors"
+      href={`${REPO_URL}/blob/main/docs/${doc.slug}.md`}
+      target="_blank"
+      rel="noopener noreferrer">View source<Icon name="arrow-up-right" class="h-3 w-3" /></a
+    >
+    <a class="inline-flex items-center gap-0.5 hover:text-[var(--text-primary)] transition-colors" href="/docs">All docs</a>
+  </footer>
+</Layout>

@@ -29,4 +29,8 @@ go test -race ./...
 The menu bar app depends only on the CLI's public contract, never on the
 controller socket.
 
+`site/` builds kamui.narasaka.dev from the docs listed in `site/src/lib/docs.ts`.
+When changing `docs/` or `site/`, also run `pnpm install && pnpm build` in
+`site/`; a broken link between docs fails that build.
+
 Use `scope: description` for commit subjects.

@@ -1,0 +1,25 @@
+---
+import favicon from "../../public/favicon.svg?raw";
+
+interface Props {
+  class?: string;
+  /** Hide the mark from assistive tech when visible text already names Kamui. */
+  decorative?: boolean;
+}
+
+const { class: className, decorative = false } = Astro.props;
+
+// Reuse the favicon's paths so the mark follows the page theme via currentColor.
+const paths = /<g[\s\S]*<\/g>/.exec(favicon)?.[0];
+if (!paths) throw new Error("public/favicon.svg has no <g> element");
+---
+
+<svg
+  class={className}
+  viewBox="0 0 100 100"
+  fill="currentColor"
+  role={decorative ? undefined : "img"}
+  aria-label={decorative ? undefined : "Kamui"}
+  aria-hidden={decorative ? "true" : undefined}
+  set:html={paths}
+/>

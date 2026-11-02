@@ -1,0 +1,53 @@
+---
+import Icon from "~/components/Icon.astro";
+
+const onDocs = Astro.url.pathname.startsWith("/docs");
+const iconLink =
+  "flex items-center gap-2 text-[var(--text-muted)] hover:text-[var(--text-primary)] aria-[current=page]:text-[var(--text-primary)] transition-colors";
+---
+
+<nav
+  class="sticky top-0 z-50 w-full max-w-[65ch] lg:max-w-2xl bg-[var(--bg)] border-b border-[var(--border)]"
+>
+  <ul class="flex gap-4 px-4 py-3 items-center">
+    <li class="mr-auto font-medium text-[var(--text-primary)]">
+      <a class="text-[var(--text-muted)] hover:text-[var(--text-primary)] transition-colors" href="https://narasaka.dev"
+        >narasaka<span class="text-[var(--accent)]">@</span>dev</a
+      >
+      <span class="text-[var(--text-muted)]">/</span>
+      <a href="/">kamui</a><span
+        class="ml-1 inline-block w-1.5 h-3 bg-[var(--text-primary)] align-[-.1em] animate-blink motion-reduce:animate-none"
+      ></span>
+    </li>
+    <li>
+      <a href="/docs" aria-label="Docs" title="Docs" aria-current={onDocs ? "page" : undefined} class={iconLink}>
+        <Icon name="book-open" class="h-4 w-4" />
+      </a>
+    </li>
+    <li>
+      <button id="theme-toggle" type="button" class={`${iconLink} cursor-pointer`} aria-label="Toggle theme">
+        <Icon name="sun" class="h-4 w-4 hidden dark:block" />
+        <Icon name="moon" class="h-4 w-4 block dark:hidden" />
+      </button>
+    </li>
+    <li>
+      <a
+        href="https://github.com/narasaka/kamui"
+        aria-label="Kamui on GitHub"
+        title="GitHub"
+        target="_blank"
+        rel="noopener noreferrer"
+        class={iconLink}
+      >
+        <Icon name="github" class="h-4 w-4" />
+      </a>
+    </li>
+  </ul>
+</nav>
+
+<script is:inline>
+  document.getElementById("theme-toggle")?.addEventListener("click", () => {
+    const dark = document.documentElement.classList.contains("dark");
+    window.__setTheme?.(dark ? "light" : "dark", true);
+  });
+</script>
