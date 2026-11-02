@@ -110,7 +110,10 @@ final class AppModel: ObservableObject {
         Task {
             defer { pending.remove(destination) }
             do {
-                let warnings = try await client.connect(destination)
+                let warnings = try await client.connect(destination) { url in
+                    // A Tailscale SSH check waits until the user signs in.
+                    Task { @MainActor in self.openSignIn(url, for: destination) }
+                }
                 if !warnings.isEmpty {
                     showDetails(title: "Connected to \(destination)", detail: warnings.joined(separator: "\n"))
                 }
@@ -163,6 +166,22 @@ final class AppModel: ObservableObject {
 
     func open(port: UInt16) {
         if let url = URL(string: "http://localhost:\(port)") {
+            NSWorkspace.shared.open(url)
+        }
+    }
+
+    private func openSignIn(_ url: URL, for destination: String) {
+        if KamuiClient.isTailscaleLogin(url) {
+            NSWorkspace.shared.open(url)
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "Sign in to connect to \(destination)?"
+        alert.informativeText = "\(destination) asks you to sign in at:\n\n\(url.absoluteString)\n\nOpen it only if you expect this host to ask for a sign-in."
+        alert.addButton(withTitle: "Open Link")
+        alert.addButton(withTitle: "Cancel")
+        NSApp.activate(ignoringOtherApps: true)
+        if alert.runModal() == .alertFirstButtonReturn {
             NSWorkspace.shared.open(url)
         }
     }

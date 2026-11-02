@@ -21,9 +21,24 @@ final class FakeRunner: CommandRunning, @unchecked Sendable {
         lock.withLock { recorded }
     }
 
-    func run(_ executable: URL, arguments: [String], environment: [String: String], timeout: Duration) async throws -> CommandResult {
+    func run(_ executable: URL, arguments: [String], environment: [String: String], timeout: Duration, onStandardErrorLine: StandardErrorLineHandler?) async throws -> CommandResult {
         lock.withLock { recorded.append(Invocation(executable: executable.path, arguments: arguments, environment: environment)) }
-        return respond(arguments)
+        let result = respond(arguments)
+        if let onStandardErrorLine {
+            result.standardError.split(separator: "\n").forEach { onStandardErrorLine(String($0)) }
+        }
+        return result
+    }
+}
+
+final class Collector<Value: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var collected: [Value] = []
+
+    var values: [Value] { lock.withLock { collected } }
+
+    func append(_ value: Value) {
+        lock.withLock { collected.append(value) }
     }
 }
 
@@ -66,6 +81,46 @@ final class KamuiClientTests: XCTestCase {
         let warnings = try await client.connect("reyna")
 
         XCTAssertEqual(warnings, ["WARNING: SSH agent forwarding is enabled for reyna; the remote host can access the forwarded agent."])
+    }
+
+    func testConnectOpensEachTailscaleSignInLinkOnceEvenWhenConnectionFails() async {
+        let runner = FakeRunner { _ in
+            CommandResult(exitStatus: 1, standardError: """
+            # Tailscale SSH requires an additional check.
+            # To authenticate, visit: https://login.tailscale.com/a/example
+            # To authenticate, visit: https://login.tailscale.com/a/example
+            To authenticate, visit: https://headscale.example.com/a/other
+            ✗ SSH authentication or connection failed for reyna
+            """)
+        }
+        let client = KamuiClient(executable: executable, environment: [:], runner: runner)
+        let opened = Collector<URL>()
+
+        _ = try? await client.connect("reyna") { opened.append($0) }
+
+        XCTAssertEqual(opened.values.map(\.absoluteString), [
+            "https://login.tailscale.com/a/example",
+            "https://headscale.example.com/a/other",
+        ])
+    }
+
+    func testSignInURLAcceptsOnlyHTTPSLinksInTailscaleCheckMessage() {
+        XCTAssertEqual(KamuiClient.signInURL(in: "# To authenticate, visit: https://login.tailscale.com/a/abc123")?.absoluteString, "https://login.tailscale.com/a/abc123")
+        XCTAssertEqual(KamuiClient.signInURL(in: "  To authenticate, visit:  https://login.tailscale.com/a/abc123  ")?.absoluteString, "https://login.tailscale.com/a/abc123")
+        XCTAssertEqual(KamuiClient.signInURL(in: "# To authenticate, visit: https://login.tailscale.com/a/abc123\r")?.absoluteString, "https://login.tailscale.com/a/abc123")
+        XCTAssertNil(KamuiClient.signInURL(in: "# To authenticate, visit: http://login.tailscale.com/a/abc123"))
+        XCTAssertNil(KamuiClient.signInURL(in: "# To authenticate, visit: file:///Applications/Calculator.app"))
+        XCTAssertNil(KamuiClient.signInURL(in: "# To authenticate, visit: https:///missing-host"))
+        XCTAssertNil(KamuiClient.signInURL(in: "# Tailscale SSH requires an additional check."))
+        XCTAssertNil(KamuiClient.signInURL(in: "Welcome! See https://example.com"))
+    }
+
+    func testOnlyTailscaleLoginHostOpensWithoutConfirmation() throws {
+        XCTAssertTrue(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://login.tailscale.com/a/abc123"))))
+        XCTAssertTrue(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://LOGIN.tailscale.com/a/abc123"))))
+        XCTAssertFalse(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://headscale.example.com/a/abc123"))))
+        XCTAssertFalse(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://login.tailscale.com.evil.example/a/abc123"))))
+        XCTAssertFalse(KamuiClient.isTailscaleLogin(try XCTUnwrap(URL(string: "https://login.tailscale.com@evil.example/a/abc123"))))
     }
 
     func testConnectRejectsOptionLikeDestinationWithoutRunningKamui() async {
@@ -112,6 +167,21 @@ final class ProcessRunnerTests: XCTestCase {
         )
         XCTAssertLessThan(ContinuousClock.now - started, .seconds(10))
         XCTAssertEqual(result, CommandResult(exitStatus: 4, standardOutput: Data("out".utf8), standardError: "err"))
+    }
+
+    func testStreamsStandardErrorLinesBeforeChildExits() async throws {
+        let lines = Collector<(String, Duration)>()
+        let started = ContinuousClock.now
+        let result = try await ProcessRunner().run(
+            URL(fileURLWithPath: "/bin/sh"),
+            arguments: ["-c", "printf 'visit: https://login.tailscale.com/a/x\\n' >&2; sleep 2; printf 'last' >&2"],
+            environment: [:],
+            timeout: .seconds(10)
+        ) { line in lines.append((line, ContinuousClock.now - started)) }
+
+        XCTAssertEqual(lines.values.map(\.0), ["visit: https://login.tailscale.com/a/x", "last"])
+        XCTAssertLessThan(lines.values[0].1, .seconds(1), "the first line arrived only after the child exited")
+        XCTAssertEqual(result.standardError, "visit: https://login.tailscale.com/a/x\nlast")
     }
 
     func testTimeoutKillsChildThatIgnoresTermination() async {
