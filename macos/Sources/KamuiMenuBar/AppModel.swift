@@ -154,7 +154,11 @@ final class AppModel: ObservableObject {
                     // A Tailscale SSH check waits until the user signs in.
                     Task { @MainActor in self.openSignIn(url, for: destination) }
                 }
-                if !warnings.isEmpty {
+                if stopping.contains(destination) {
+                    // Stop was requested before this connection reached the
+                    // controller, so it had nothing to stop then.
+                    try? await client.stop(destination)
+                } else if !warnings.isEmpty {
                     showDetails(title: "Connected to \(destination)", detail: warnings.joined(separator: "\n"))
                 }
             } catch where !stopping.contains(destination) {
@@ -191,6 +195,9 @@ final class AppModel: ObservableObject {
         }
         do {
             try await client.stop(destination)
+        } catch where stopping.contains(destination) {
+            // The connection has not reached the controller yet; connect
+            // stops it when it finishes.
         } catch {
             presentError(error)
         }
