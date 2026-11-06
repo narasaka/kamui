@@ -1,6 +1,6 @@
 # ADR 0012: Ship a macOS menu bar app as a CLI client
 
-- Status: accepted; superseded in part by ADR 0015
+- Status: accepted; superseded in part by ADR 0015 and ADR 0016
 - Date: 2026-10-30
 - Supersedes in part: ADR 0002
 

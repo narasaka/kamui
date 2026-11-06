@@ -131,7 +131,7 @@ caveats.
 
 ```sh
 make check             # gofmt, golangci-lint, go vet, go test -race
-make check-macos-app   # Swift tests for the menu bar app
+make check-macos-app   # Rust format, lint, and tests for the menu bar app
 make macos-app         # build dist/Kamui.app
 ```
 
