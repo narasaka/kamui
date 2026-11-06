@@ -5,12 +5,12 @@ use std::cell::RefCell;
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::{Bool, NSObjectProtocol};
+use objc2::runtime::{Bool, NSObjectProtocol, ProtocolObject};
 use objc2::{MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSBezierPath, NSColor, NSCompositingOperation, NSControlStateValueOff, NSControlStateValueOn,
-    NSEventModifierFlags, NSGraphicsContext, NSImage, NSMenu, NSMenuItem, NSStatusBar,
-    NSStatusItem,
+    NSEventModifierFlags, NSGraphicsContext, NSImage, NSMenu, NSMenuDelegate, NSMenuItem,
+    NSStatusBar, NSStatusItem,
 };
 use objc2_foundation::{MainThreadMarker, NSObject, NSPoint, NSRect, NSSize, NSString};
 use rune::AppHandle;
@@ -27,7 +27,13 @@ struct Status {
     target: Retained<MenuTarget>,
     handle: AppHandle<Model>,
     indicator: Option<Indicator>,
+    /// What the menu shows now.
     items: Vec<Item>,
+    /// What it should show. While the menu is open it waits, so a refresh
+    /// never changes the menu under the pointer.
+    latest: Vec<Item>,
+    /// The menu is open (between `menuWillOpen:` and `menuDidClose:`).
+    open: bool,
     /// The action of each item that has one, by its tag.
     actions: Vec<Action>,
 }
@@ -43,6 +49,20 @@ define_class!(
     struct MenuTarget;
 
     unsafe impl NSObjectProtocol for MenuTarget {}
+
+    unsafe impl NSMenuDelegate for MenuTarget {
+        #[unsafe(method(menuWillOpen:))]
+        fn menu_will_open(&self, menu: &NSMenu) {
+            set_open(menu, true);
+        }
+
+        // The pick that closed the menu is sent after this, and the next
+        // update rebuilds the menu, so the picked item stays put until then.
+        #[unsafe(method(menuDidClose:))]
+        fn menu_did_close(&self, menu: &NSMenu) {
+            set_open(menu, false);
+        }
+    }
 
     impl MenuTarget {
         #[unsafe(method(pick:))]
@@ -82,6 +102,8 @@ pub fn install(handle: AppHandle<Model>) {
     if let Some(button) = item.button(mtm) {
         button.setImage(Some(&icon(Indicator::Idle)));
     }
+    // The menu keeps a weak reference; the target lives in STATUS.
+    menu.setDelegate(Some(ProtocolObject::from_ref(&*target)));
     item.setMenu(Some(&menu));
     STATUS.with(|status| {
         *status.borrow_mut() = Some(Status {
@@ -91,6 +113,8 @@ pub fn install(handle: AppHandle<Model>) {
             handle,
             indicator: Some(Indicator::Idle),
             items: Vec::new(),
+            latest: Vec::new(),
+            open: false,
             actions: Vec::new(),
         });
     });
@@ -114,14 +138,46 @@ pub fn sync(m: &Model) {
                 button.setImage(Some(&icon(indicator)));
             }
         }
-        let items = menu::items(m);
-        if items != status.items {
-            let mut actions = Vec::new();
-            status.menu.removeAllItems();
-            fill(&status.menu, &items, &status.target, &mut actions, mtm);
-            status.items = items;
-            status.actions = actions;
+        status.latest = menu::items(m);
+    });
+    rebuild();
+}
+
+/// Tracks whether the top-level menu is open; submenus share its delegate.
+fn set_open(menu: &NSMenu, open: bool) {
+    STATUS.with(|status| {
+        if let Some(status) = status.borrow_mut().as_mut()
+            && std::ptr::eq(menu, &*status.menu)
+        {
+            status.open = open;
         }
+    });
+}
+
+/// Refills the menu from the latest items unless it is open.
+fn rebuild() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    STATUS.with(|status| {
+        let mut status = status.borrow_mut();
+        let Some(status) = status.as_mut() else {
+            return;
+        };
+        if status.open || status.latest == status.items {
+            return;
+        }
+        let mut actions = Vec::new();
+        status.menu.removeAllItems();
+        fill(
+            &status.menu,
+            &status.latest,
+            &status.target,
+            &mut actions,
+            mtm,
+        );
+        status.items = status.latest.clone();
+        status.actions = actions;
     });
 }
 
