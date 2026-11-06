@@ -63,6 +63,7 @@ jobs:
           KAMUI_BUILD_DATE: ${{ steps.release.outputs.build_date }}
         run: make package VERSION=${{ steps.release.outputs.version }}
 
+      # rustup installs the toolchain and targets in macos/rust-toolchain.toml.
       - name: Check menu bar app
         run: make check-macos-app
 

@@ -115,6 +115,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: true
+      # rustup installs the toolchain and targets in macos/rust-toolchain.toml
+      # before the cache keys on it.
+      - name: Install Rust toolchain
+        working-directory: macos
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: macos
       - name: Test menu bar app
         run: make check-macos-app
       - name: Build universal menu bar app

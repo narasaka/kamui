@@ -22,8 +22,11 @@ check-lint: install-golangci-lint
 	GOOS=darwin $(GOLANGCI_LINT) run ./...
 	GOOS=linux $(GOLANGCI_LINT) run ./...
 
+# macos/rust-toolchain.toml selects Rune's Rust toolchain under rustup.
 check-macos-app:
-	swift test --package-path macos
+	cd macos && cargo fmt --check
+	cd macos && cargo clippy --locked --all-targets -- -D warnings
+	cd macos && cargo test --locked
 
 macos-app:
 	scripts/build-macos-app.sh "$(or $(VERSION),0.0.0)"
