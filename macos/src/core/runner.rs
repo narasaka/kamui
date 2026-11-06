@@ -194,7 +194,15 @@ impl CommandRunner for ProcessRunner {
         let mut deadline = Instant::now() + timeout;
         let mut checked = Instant::now();
         let status = loop {
-            let exited = child.try_wait().map_err(launch)?;
+            let exited = child.try_wait().map_err(|error| {
+                // Answers must not reach a descendant that kept stdin open.
+                // The PID may already belong to someone else, so it isn't
+                // signalled.
+                if let Some(input) = &io.input {
+                    input.close();
+                }
+                launch(error)
+            })?;
             readers.iter_mut().for_each(LineReader::drain);
             if let Some(status) = exited {
                 break Some(status);
