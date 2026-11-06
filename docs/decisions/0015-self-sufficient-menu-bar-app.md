@@ -1,6 +1,6 @@
 # ADR 0015: Let the menu bar app work without a terminal or a separate CLI
 
-- Status: accepted
+- Status: accepted; superseded in part by ADR 0016
 - Date: 2026-11-02
 - Supersedes in part: ADR 0012
 - Amends: ADR 0013

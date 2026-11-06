@@ -30,6 +30,11 @@ go test -race ./...
 contract, never on the controller socket. It bundles a `kamui` built by
 `scripts/build-macos-app.sh`, so Go changes also ship in the app.
 
+The menu bar app is Rust, drawn with Rune (ADR 0016). Look at any window
+change before handing it off: `cd macos && cargo run -- --snap out.png --scene
+ports --theme dark` renders a scene headless, and `--list-scenes` lists them.
+Add a scene in `macos/src/ui/scenes.rs` for a new state.
+
 `site/` builds kamui.narasaka.dev from the docs listed in `site/src/lib/docs.ts`.
 When changing `docs/` or `site/`, also run `pnpm install && pnpm build` in
 `site/`; a broken link between docs fails that build.

@@ -6,6 +6,10 @@
 # CLI binaries and Homebrew formula, so all of them share one controller build
 # identity.
 #
+# The app itself is Rust (macos/, drawn with Rune). It is built for arm64 and
+# x86_64 and joined with lipo; KAMUI_APP_ARCHS (for example "arm64") builds
+# fewer, for a toolchain without the other target.
+#
 # Signing uses KAMUI_CODESIGN_IDENTITY, or an ad-hoc signature when unset.
 # Notarization runs when KAMUI_NOTARY_KEY (an App Store Connect API key file),
 # KAMUI_NOTARY_KEY_ID, and KAMUI_NOTARY_ISSUER are all set; it requires a
@@ -50,13 +54,28 @@ for architecture in arm64 amd64; do
 done
 
 package_root="${repository_root}/macos"
-swift build --package-path "$package_root" -c release --arch arm64 --arch x86_64 --product KamuiMenuBar
-binary="$(swift build --package-path "$package_root" -c release --arch arm64 --arch x86_64 --show-bin-path)/KamuiMenuBar"
+binaries=()
+for architecture in ${KAMUI_APP_ARCHS:-arm64 x86_64}; do
+  case "$architecture" in
+    arm64) target=aarch64-apple-darwin ;;
+    x86_64) target=x86_64-apple-darwin ;;
+    *)
+      echo "unknown architecture in KAMUI_APP_ARCHS: $architecture" >&2
+      exit 2
+      ;;
+  esac
+  # From inside macos/, so rustup follows its rust-toolchain.toml.
+  (
+    cd "$package_root"
+    MACOSX_DEPLOYMENT_TARGET=13.0 cargo build --locked --release --target "$target" --bin kamui-app
+  )
+  binaries+=("${package_root}/target/${target}/release/kamui-app")
+done
 
 app="${output_root}/Kamui.app"
 rm -rf "$app"
 mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Helpers" "${app}/Contents/Resources"
-cp "$binary" "${app}/Contents/MacOS/Kamui"
+lipo -create -output "${app}/Contents/MacOS/Kamui" "${binaries[@]}"
 lipo -create -output "${app}/Contents/Helpers/kamui" "${helper_build}/kamui-arm64" "${helper_build}/kamui-amd64"
 cp "${package_root}/Resources/AppIcon.icns" "${app}/Contents/Resources/AppIcon.icns"
 sed "s/KAMUI_VERSION/${version}/g" "${package_root}/Resources/Info.plist" > "${app}/Contents/Info.plist"

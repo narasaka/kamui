@@ -74,9 +74,11 @@ Homebrew may ask you to trust the tap first with `brew trust narasaka/tap`.
 Uninstalling the app does not stop sessions. Run `kamui stop --all` first if
 you want them stopped.
 
-To build the app from source, run `make macos-app` with Xcode and Go
-installed. It writes an ad-hoc-signed `dist/Kamui.app` with `kamui` in
-`Contents/Helpers`.
+To build the app from source, run `make macos-app` with Go and
+[rustup](https://rustup.rs) installed; `macos/rust-toolchain.toml` picks the
+Rust toolchain. It writes an ad-hoc-signed universal `dist/Kamui.app` with
+`kamui` in `Contents/Helpers`. Set `KAMUI_APP_ARCHS=arm64` to build the app for
+Apple silicon only.
 
 ## User data
 
