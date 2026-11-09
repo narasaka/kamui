@@ -27,6 +27,16 @@ pub fn run() {
         mac::run();
         return;
     }
-    let _ = headless;
-    rune::run(ui::spec());
+    if !headless {
+        // Off macOS, a run shows the window alone.
+        rune::run(ui::spec());
+        return;
+    }
+    // `--window toast` renders the toast; the window is the default.
+    rune::run_windows(|_| {
+        [
+            rune::WindowSpec::new("main", ui::spec()).boxed(),
+            rune::WindowSpec::new("toast", ui::toast::spec()).boxed(),
+        ]
+    });
 }

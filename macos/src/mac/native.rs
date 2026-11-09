@@ -1,10 +1,12 @@
 //! Small AppKit and Foundation calls: settings in `NSUserDefaults`, the
-//! login item, and the bundle's version.
+//! login item, the bundle's version, and the top of the screen that the
+//! menu bar and the notch cover.
 //!
 //! Settings keep the keys the Swift app used, so an upgrade keeps the user's
 //! chosen kamui.
 
-use objc2_foundation::{NSBundle, NSString, NSUserDefaults};
+use objc2_app_kit::NSScreen;
+use objc2_foundation::{MainThreadMarker, NSBundle, NSString, NSUserDefaults};
 use objc2_service_management::{SMAppService, SMAppServiceStatus};
 
 const EXECUTABLE_OVERRIDE: &str = "kamuiExecutablePath";
@@ -64,4 +66,24 @@ pub fn version() -> Option<String> {
         bundle.objectForInfoDictionaryKey(&NSString::from_str("CFBundleShortVersionString"))?;
     let value = value.downcast::<NSString>().ok()?;
     Some(value.to_string())
+}
+
+/// How far down the main display the menu bar and the notch reach, in
+/// points. The menu bar is taller on a Mac with a notch; while it hides,
+/// the notch still covers the top. Call it on the main thread.
+pub fn top_inset() -> f64 {
+    const USUAL: f64 = 24.0;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return USUAL;
+    };
+    let screens = NSScreen::screens(mtm);
+    let Some(screen) = screens.firstObject() else {
+        return USUAL;
+    };
+    let (frame, visible) = (screen.frame(), screen.visibleFrame());
+    let top = frame.origin.y + frame.size.height;
+    let visible_top = visible.origin.y + visible.size.height;
+    (top - visible_top)
+        .max(screen.safeAreaInsets().top)
+        .max(0.0)
 }

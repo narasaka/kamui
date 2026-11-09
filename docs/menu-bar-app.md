@@ -45,6 +45,13 @@ From the menu bar icon you can:
 The icon dims while nothing is connected or a connection is starting, and
 shows a dot when a session or an SSH prompt needs your attention.
 
+Connecting from the menu leaves the window closed. When the connection
+finishes, a toast appears for a few seconds at the top center of the screen,
+under the menu bar. It says the host connected, shows any warning, such as SSH
+agent forwarding being on, or says why the connection failed. Click the toast
+to open the window on that session, with any warning or error in full. While
+the Kamui window is in front, it shows these messages itself instead.
+
 ## The window
 
 **Open Kamui…** in the menu, or opening Kamui again from Finder or Spotlight,

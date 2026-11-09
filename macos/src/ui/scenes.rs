@@ -1,13 +1,14 @@
 //! Fixture states for headless snapshots: `kamui-app --snap out.png --scene
 //! ports --theme dark`. `--list-scenes` lists them.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use rune::TextEdit;
 
 use super::model::{Backend, Model, Page};
 use super::onboarding::{Step, Tour};
+use super::toast::Toast;
 use crate::core::prompt::{PromptKind, PromptResponder, SshPrompt};
 use crate::core::{Conflict, Session, SessionState};
 
@@ -15,6 +16,10 @@ use crate::core::{Conflict, Session, SessionState};
 #[derive(Default)]
 pub struct Recorder {
     pub calls: RefCell<Vec<String>>,
+    /// Whether the window counts as in front.
+    pub in_front: Cell<bool>,
+    /// Whether toasts show, as they do in the app.
+    pub toasts: Cell<bool>,
 }
 
 impl Recorder {
@@ -58,6 +63,20 @@ impl Backend for Recorder {
     }
     fn show_window(&self) {
         self.record("show".into());
+    }
+    fn window_in_front(&self) -> bool {
+        self.in_front.get()
+    }
+    fn toast(&self, toast: Toast) -> bool {
+        if self.toasts.get() {
+            self.record(format!(
+                "toast {:?} {} ({})",
+                toast.tone,
+                toast.title,
+                toast.destination.unwrap_or_default()
+            ));
+        }
+        self.toasts.get()
     }
     fn window_closed(&self) {
         self.record("closed".into());
