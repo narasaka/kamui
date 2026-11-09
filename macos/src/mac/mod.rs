@@ -3,10 +3,11 @@
 //! threads, reporting back with `AppHandle::update`.
 //!
 //! The app starts with no window. It opens one for first-run setup, for an
-//! SSH prompt or a message, and when the user asks. While a window shows,
-//! the app has a Dock icon so ⌘Tab reaches it; closing the window hides the
-//! icon again. Quitting the app leaves sessions running, because they live
-//! in kamui's controller.
+//! SSH prompt, and when the user asks; messages are toasts under the menu
+//! bar unless the window is in front. While a window shows, the app has a
+//! Dock icon so ⌘Tab reaches it; closing the window hides the icon again.
+//! Quitting the app leaves sessions running, because they live in kamui's
+//! controller.
 
 mod native;
 mod status_item;
@@ -16,12 +17,18 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
-use rune::{App, AppHandle, Chrome, Tx};
+use rune::{
+    Align, App, AppHandle, Availability, Chrome, OverlayHandle, OverlayInput, OverlayOptions,
+    OverlaySpec, ScreenEdge, Tx,
+};
+use rune_mac::notify;
 
 use crate::core::prompt::{PromptHandler, PromptReply, PromptResponder, SshPrompt};
 use crate::core::{KamuiClient, KamuiError, locator, ssh_config};
 use crate::ui::model::{Backend, Model, POLL_INTERVAL, Snapshot};
+use crate::ui::toast::{self, Toast, ToastState};
 
 /// What background threads need to run kamui.
 struct Context {
@@ -53,6 +60,7 @@ impl Shared {
 struct MacBackend {
     handle: AppHandle<Model>,
     shared: Arc<Shared>,
+    toasts: OverlayHandle<ToastState>,
 }
 
 /// Runs `f` on the UI thread and brings the status item up to date.
@@ -245,6 +253,27 @@ impl Backend for MacBackend {
         self.handle.open();
     }
 
+    fn window_in_front(&self) -> bool {
+        self.handle.is_visible() && notify::app_focused()
+    }
+
+    fn toast(&self, toast: Toast) -> bool {
+        if self.toasts.availability() == Availability::Unavailable {
+            return false;
+        }
+        // Under the menu bar and the notch.
+        let margin = native::top_inset() as f32 + 8.0 - toast::GUTTER;
+        self.toasts.place(ScreenEdge::Top, margin.max(0.0));
+        // Shown from the same update as the toast, so a hide that the last
+        // toast's countdown asked for in the meantime can't land after it.
+        let overlay = self.toasts.clone();
+        self.toasts.update(move |s, _| {
+            s.show(toast);
+            overlay.fade_in(TOAST_FADE);
+        });
+        true
+    }
+
     fn window_closed(&self) {
         self.handle.set_dock_icon(false);
     }
@@ -262,7 +291,7 @@ fn poll(m: &mut Model, now: f64, tx: &mut Tx) -> bool {
 
 /// Closing the window keeps the app in the menu bar, without a Dock icon.
 fn on_close(m: &mut Model, _: &mut Tx) {
-    m.backend.window_closed();
+    m.window_closed();
 }
 
 /// Opening Kamui again from Finder, Spotlight or the Dock shows the window,
@@ -270,6 +299,36 @@ fn on_close(m: &mut Model, _: &mut Tx) {
 fn on_reopen(m: &mut Model, _: bool, _: &mut Tx) -> bool {
     m.backend.show_window();
     true
+}
+
+const TOAST_FADE: Duration = Duration::from_millis(180);
+
+/// The toast's overlay, at the top centre of the main display. Only the card
+/// takes clicks; one opens the window on the toast's session and messages.
+fn toast_overlay(app: &mut App<Model>, handle: &AppHandle<Model>) -> OverlayHandle<ToastState> {
+    let spec = OverlaySpec {
+        align: Align::Center,
+        ..OverlaySpec::new("Kamui", toast::SIZE, toast::view)
+    };
+    let toasts = app.overlay(
+        spec.options(OverlayOptions {
+            input: OverlayInput::Regions,
+            // Made at launch, so a toast that can't show is known before
+            // one is needed and the window shows the message instead.
+            prewarm: true,
+            ..OverlayOptions::default()
+        })
+        .poll(toast::poll),
+        ToastState::default(),
+    );
+    let (overlay, handle) = (toasts.clone(), handle.clone());
+    toasts.update(move |s, _| {
+        s.on_dismiss = Some(Box::new(move || overlay.fade_out(TOAST_FADE)));
+        s.on_open = Some(Box::new(move |toasts| {
+            update(&handle, move |m, _| m.toast_clicked(toasts))
+        }));
+    });
+    toasts
 }
 
 pub fn run() {
@@ -293,7 +352,7 @@ pub fn run() {
 
     let mut spec = crate::ui::spec();
     spec.poll = Some(poll);
-    let app = App::new(spec)
+    let mut app = App::new(spec)
         .args(Vec::new())
         .accessory()
         .windowless()
@@ -307,12 +366,14 @@ pub fn run() {
         .on_close(on_close)
         .on_reopen(on_reopen);
     let handle = app.handle();
+    let toasts = toast_overlay(&mut app, &handle);
     let backend_handle = handle.clone();
     let backend_shared = shared.clone();
     let app = app.init(move || {
         let backend = Rc::new(MacBackend {
             handle: backend_handle,
             shared: backend_shared,
+            toasts,
         });
         let mut m = Model::new(backend);
         m.bundled = bundled;

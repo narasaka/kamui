@@ -11,6 +11,7 @@ pub mod onboarding;
 pub mod prompt;
 pub mod scenes;
 pub mod theme;
+pub mod toast;
 pub mod window;
 
 use model::{Model, Page};

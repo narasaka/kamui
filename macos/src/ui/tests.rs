@@ -1,6 +1,7 @@
 //! The window and model, driven headless through Rune's `Runtime` with a
 //! backend that records what it was asked to do.
 
+use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -10,6 +11,7 @@ use super::menu::{self, Action, Item};
 use super::model::{Model, Page, PendingPrompt, Snapshot};
 use super::onboarding::{ADVANCE_BEAT, Step, Tour};
 use super::scenes::{self, Recorder};
+use super::toast::{self, Toast, ToastState, Tone};
 use super::{SIZE, view};
 use crate::core::prompt::{PromptKind, PromptResponder, SshPrompt};
 use crate::core::runner::CommandInput;
@@ -357,6 +359,450 @@ fn warnings_after_connecting_are_shown() {
         )
     });
     assert_eq!(rt.state.notes[0].title, "Connected to pi");
+    assert_eq!(
+        rt.state.notes[0].detail, "WARNING: SSH agent forwarding is enabled for pi",
+        "the window keeps kamui's marker"
+    );
+}
+
+/// The fixture with the window closed, where toasts show.
+fn toasting() -> (Model, Rc<Recorder>) {
+    let (m, recorder) = fixture();
+    recorder.toasts.set(true);
+    (m, recorder)
+}
+
+fn shown(recorder: &Recorder) -> bool {
+    recorder.calls().contains(&"show".to_owned())
+}
+
+#[test]
+fn connecting_from_the_menu_reports_in_a_toast_not_the_window() {
+    let (m, recorder) = toasting();
+    let mut rt = runtime(m);
+    rt.update(|m, tx| menu::pick(m, Action::Connect("pi".into()), tx));
+    assert!(recorder.calls().contains(&"connect pi".to_owned()));
+    rt.update(|m, tx| m.connect_finished("pi", Ok(Vec::new()), tx));
+    assert!(
+        recorder
+            .calls()
+            .contains(&"toast Connected Connected to pi (pi)".to_owned())
+    );
+    assert!(!shown(&recorder));
+    assert!(rt.state.notes.is_empty());
+}
+
+#[test]
+fn warnings_after_connecting_from_the_menu_are_a_toast() {
+    let (mut m, recorder) = toasting();
+    m.connect("pi");
+    let mut rt = runtime(m);
+    rt.update(|m, tx| {
+        m.connect_finished(
+            "pi",
+            Ok(vec![
+                "WARNING: SSH agent forwarding is enabled for pi".into(),
+            ]),
+            tx,
+        )
+    });
+    assert!(
+        recorder
+            .calls()
+            .contains(&"toast Warning Connected to pi (pi)".to_owned())
+    );
+    assert!(!shown(&recorder));
+    assert!(rt.state.notes.is_empty());
+}
+
+#[test]
+fn a_failure_with_the_window_closed_is_a_toast() {
+    let (mut m, recorder) = toasting();
+    m.connect("pi");
+    let mut rt = runtime(m);
+    rt.update(|m, tx| {
+        m.connect_finished("pi", Err(KamuiError::CommandFailed("timed out".into())), tx)
+    });
+    assert!(
+        recorder
+            .calls()
+            .contains(&"toast Failed Could not connect to pi (pi)".to_owned())
+    );
+    assert!(!shown(&recorder));
+    assert!(rt.state.notes.is_empty());
+}
+
+#[test]
+fn with_the_window_in_front_messages_stay_in_it() {
+    let (mut m, recorder) = toasting();
+    recorder.in_front.set(true);
+    m.connect("pi");
+    m.connect("lab");
+    let mut rt = runtime(m);
+    rt.update(|m, tx| m.connect_finished("pi", Ok(Vec::new()), tx));
+    rt.update(|m, tx| {
+        m.connect_finished(
+            "lab",
+            Err(KamuiError::CommandFailed("timed out".into())),
+            tx,
+        )
+    });
+    assert!(!recorder.calls().iter().any(|c| c.starts_with("toast")));
+    assert_eq!(rt.state.notes.len(), 1);
+    assert_eq!(rt.state.notes[0].title, "Could not connect to lab");
+}
+
+fn a_toast(destination: &str, tone: Tone) -> Toast {
+    Toast {
+        title: format!("About {destination}"),
+        detail: "In full".into(),
+        destination: Some(destination.into()),
+        tone,
+    }
+}
+
+#[test]
+fn clicking_a_toast_opens_its_session() {
+    let (mut m, recorder) = toasting();
+    m.page = Page::Settings;
+    m.toast_clicked(vec![a_toast("lab", Tone::Connected)]);
+    assert_eq!(m.page, Page::Session("lab".into()));
+    assert!(shown(&recorder));
+    assert!(m.notes.is_empty(), "the page says it connected");
+}
+
+#[test]
+fn clicking_a_warning_or_failure_toast_shows_it_in_full() {
+    let (mut m, recorder) = toasting();
+    m.page = Page::Settings;
+    m.toast_clicked(vec![a_toast("lab", Tone::Warning)]);
+    assert_eq!(m.page, Page::Session("lab".into()));
+    assert_eq!(m.notes[0].title, "About lab");
+    m.dismiss_note();
+    // A host that never connected has no page; only the dialog has the error.
+    m.page = Page::Settings;
+    m.toast_clicked(vec![a_toast("gitlab.com", Tone::Failed)]);
+    assert_eq!(m.page, Page::Settings);
+    assert_eq!(m.notes[0].title, "About gitlab.com");
+    assert_eq!(m.notes[0].detail, "In full");
+    assert!(shown(&recorder));
+}
+
+#[test]
+fn clicking_shows_the_toasts_still_waiting_in_full() {
+    let (mut m, _) = toasting();
+    m.toast_clicked(vec![
+        a_toast("lab", Tone::Failed),
+        a_toast("pi", Tone::Connected),
+        a_toast("gitlab.com", Tone::Failed),
+    ]);
+    let titles: Vec<&str> = m.notes.iter().map(|n| n.title.as_str()).collect();
+    assert_eq!(titles, ["About lab", "About gitlab.com"]);
+}
+
+/// A host that connected but isn't a session yet, its toast clicked, and a
+/// refresh that reports it.
+fn clicked_before_known() -> (Model, Snapshot) {
+    let (mut m, _) = toasting();
+    m.page = Page::Settings;
+    m.connect("new");
+    m.connect_finished("new", Ok(Vec::new()), &mut rune::Tx::default());
+    m.toast_clicked(vec![a_toast("new", Tone::Connected)]);
+    let old = m.sessions.clone();
+    let mut new = old[0].clone();
+    new.destination = "new".into();
+    let fresh = Snapshot {
+        sessions: Some([old, vec![new]].concat()),
+        problem: None,
+        executable: m.executable.clone(),
+        hosts: m.hosts.clone(),
+        launches_at_login: true,
+    };
+    (m, fresh)
+}
+
+/// A refresh that started before the host connected.
+fn older(m: &Model, fresh: &Snapshot) -> Snapshot {
+    Snapshot {
+        sessions: Some(m.sessions.clone()),
+        ..fresh.clone()
+    }
+}
+
+#[test]
+fn clicking_a_toast_before_its_session_is_known_opens_its_page() {
+    let (mut m, fresh) = clicked_before_known();
+    assert_eq!(m.page, Page::Session("new".into()));
+    m.apply(fresh);
+    assert_eq!(m.page, Page::Session("new".into()));
+    assert!(m.opening.is_none(), "the session is known now");
+}
+
+#[test]
+fn an_older_refresh_keeps_the_new_sessions_page() {
+    let (mut m, fresh) = clicked_before_known();
+    // It also lacks a session that has since gone, which is no reason to
+    // leave the page either.
+    let mut stale = older(&m, &fresh);
+    stale.sessions.as_mut().unwrap().remove(0);
+    m.apply(stale);
+    assert_eq!(m.page, Page::Session("new".into()));
+    m.apply(fresh);
+    assert_eq!(m.page, Page::Session("new".into()));
+}
+
+#[test]
+fn going_elsewhere_ends_the_wait() {
+    let (mut m, fresh) = clicked_before_known();
+    m.page = Page::Settings;
+    m.apply(older(&m, &fresh));
+    assert!(m.opening.is_none());
+    assert_eq!(m.page, Page::Settings);
+}
+
+#[test]
+fn closing_the_window_ends_the_wait() {
+    let (mut m, fresh) = clicked_before_known();
+    m.window_closed();
+    m.apply(older(&m, &fresh));
+    assert_ne!(m.page, Page::Session("new".into()));
+}
+
+#[test]
+fn stopping_the_new_session_ends_the_wait() {
+    for stop_all in [false, true] {
+        let (mut m, fresh) = clicked_before_known();
+        if stop_all {
+            m.stop_all();
+        } else {
+            m.stop("new");
+        }
+        m.apply(older(&m, &fresh));
+        assert_ne!(m.page, Page::Session("new".into()), "stop_all: {stop_all}");
+    }
+}
+
+#[test]
+fn a_session_that_never_appears_leaves_its_page() {
+    let (mut m, fresh) = clicked_before_known();
+    let stale = older(&m, &fresh);
+    let unanswered = Snapshot {
+        sessions: None,
+        ..stale.clone()
+    };
+    m.apply(unanswered);
+    for _ in 0..3 {
+        m.apply(stale.clone());
+        assert_eq!(m.page, Page::Session("new".into()), "it waits a while");
+    }
+    m.apply(stale);
+    assert_ne!(m.page, Page::Session("new".into()));
+}
+
+#[test]
+fn a_connection_during_setup_reports_in_the_window_not_a_toast() {
+    let (mut m, recorder) = first_run();
+    recorder.toasts.set(true);
+    m.tour = Some(Tour::at(Step::Connect));
+    m.connect("lab");
+    let mut rt = runtime(m);
+    rt.update(|m, tx| {
+        m.connect_finished(
+            "lab",
+            Ok(vec![
+                "WARNING: SSH agent forwarding is enabled for lab".into(),
+            ]),
+            tx,
+        )
+    });
+    assert!(!recorder.calls().iter().any(|c| c.starts_with("toast")));
+    assert_eq!(rt.state.notes[0].title, "Connected to lab");
+}
+
+#[test]
+fn other_errors_with_the_window_closed_are_toasts() {
+    let (mut m, recorder) = toasting();
+    m.stop("pi");
+    let id = m.stop_serial;
+    m.stop_finished(id, Err(KamuiError::CommandFailed("no session pi".into())));
+    assert!(
+        recorder
+            .calls()
+            .contains(&"toast Failed Kamui ()".to_owned())
+    );
+    assert!(!shown(&recorder));
+    assert!(m.notes.is_empty());
+}
+
+#[test]
+fn without_a_toast_messages_open_the_window() {
+    let (mut m, recorder) = fixture();
+    m.connect("pi");
+    let mut rt = runtime(m);
+    rt.update(|m, tx| {
+        m.connect_finished("pi", Err(KamuiError::CommandFailed("timed out".into())), tx)
+    });
+    assert!(shown(&recorder));
+    assert_eq!(rt.state.notes[0].title, "Could not connect to pi");
+}
+
+/// A toast in its own runtime, with what it asked of the host.
+fn toast_runtime(scene: usize) -> (Runtime<ToastState>, Rc<RefCell<Vec<String>>>) {
+    let host = Rc::new(RefCell::new(Vec::new()));
+    let mut s = ToastState::default();
+    (toast::SCENES[scene].1)(&mut s);
+    let dismissed = host.clone();
+    s.on_dismiss = Some(Box::new(move || {
+        dismissed.borrow_mut().push("dismiss".into())
+    }));
+    let opened = host.clone();
+    s.on_open = Some(Box::new(move |toasts: Vec<Toast>| {
+        let destinations: Vec<String> = toasts
+            .into_iter()
+            .map(|t| t.destination.unwrap_or_default())
+            .collect();
+        opened
+            .borrow_mut()
+            .push(format!("open {}", destinations.join(" ")))
+    }));
+    let mut rt = Runtime::new(
+        s,
+        toast::view,
+        toast::SIZE,
+        Env {
+            system_dark: false,
+            scale: 2.0,
+        },
+    );
+    rt.frame(0.0);
+    (rt, host)
+}
+
+#[test]
+fn a_toast_goes_on_its_own() {
+    let (mut rt, host) = toast_runtime(0);
+    let mut tx = rune::Tx::default();
+    assert!(
+        !toast::poll(&mut rt.state, 10.0, &mut tx),
+        "the countdown starts"
+    );
+    assert!(!toast::poll(&mut rt.state, 12.0, &mut tx));
+    assert!(host.borrow().is_empty());
+    assert!(toast::poll(&mut rt.state, 14.0, &mut tx));
+    assert_eq!(*host.borrow(), ["dismiss"]);
+    assert!(!rt.state.showing);
+}
+
+#[test]
+fn a_new_toast_replaces_a_connected_one_with_its_own_countdown() {
+    let (mut rt, host) = toast_runtime(0);
+    let mut tx = rune::Tx::default();
+    toast::poll(&mut rt.state, 10.0, &mut tx);
+    (toast::SCENES[2].1)(&mut rt.state);
+    toast::poll(&mut rt.state, 13.0, &mut tx);
+    assert!(
+        !toast::poll(&mut rt.state, 15.0, &mut tx),
+        "an error stays longer"
+    );
+    assert!(host.borrow().is_empty());
+    assert!(toast::poll(&mut rt.state, 21.0, &mut tx));
+    assert_eq!(*host.borrow(), ["dismiss"]);
+}
+
+#[test]
+fn a_later_toast_waits_for_an_error_to_be_seen_then_goes_on_its_own() {
+    let (mut rt, host) = toast_runtime(2);
+    rt.poll = Some(toast::poll);
+    let showing = |rt: &Runtime<ToastState>| {
+        rt.state
+            .toast
+            .as_ref()
+            .filter(|_| rt.state.showing)
+            .and_then(|t| t.destination.clone())
+    };
+    rt.frame(0.5);
+    rt.update(|s, _| (toast::SCENES[0].1)(s));
+    assert_eq!(showing(&rt).as_deref(), Some("pi"), "the error stays");
+    // Only Rune's frames drive the countdowns from here.
+    let mut seen = Vec::new();
+    for _ in 0..60 {
+        rt.frame(0.5);
+        if let Some(d) = showing(&rt) {
+            // A shell sleeps until a wake, so a toast without one stays.
+            assert!(rt.wake_deadline().is_some(), "{d} has a countdown");
+            if seen.last() != Some(&d) {
+                seen.push(d);
+            }
+        }
+    }
+    assert_eq!(seen, ["pi", "reyna"]);
+    assert!(!rt.state.showing, "the waiting toast went too");
+    assert_eq!(*host.borrow(), ["dismiss"]);
+}
+
+#[test]
+fn toasts_keep_their_order_and_a_repeat_is_dropped() {
+    let (mut rt, _) = toast_runtime(2);
+    let failed = |d: &str| a_toast(d, Tone::Failed);
+    rt.state.show(a_toast("reyna", Tone::Connected));
+    rt.state.show(failed("lab"));
+    rt.state.show(failed("lab"));
+    rt.state.dismiss();
+    assert_eq!(
+        rt.state.toast.as_ref().unwrap().destination.as_deref(),
+        Some("reyna")
+    );
+    // A connected toast on screen gives way, but not ahead of one waiting.
+    rt.state.show(failed("gitlab.com"));
+    let mut order = Vec::new();
+    while rt.state.showing {
+        order.push(rt.state.toast.clone().unwrap().destination.unwrap());
+        rt.state.dismiss();
+    }
+    assert_eq!(order, ["reyna", "lab", "gitlab.com"]);
+}
+
+#[test]
+fn a_warning_toast_drops_kamuis_marker() {
+    let warning = Toast {
+        detail: "WARNING: one\nWARNING: two".into(),
+        ..a_toast("pi", Tone::Warning)
+    };
+    assert_eq!(warning.shown_detail(), "one\ntwo");
+    let failed = Toast {
+        detail: "WARNING: as kamui said it".into(),
+        ..a_toast("pi", Tone::Failed)
+    };
+    assert_eq!(failed.shown_detail(), "WARNING: as kamui said it");
+}
+
+#[test]
+fn clicking_the_toast_opens_its_session_and_dismisses_it() {
+    let (mut rt, host) = toast_runtime(2);
+    (toast::SCENES[1].1)(&mut rt.state);
+    press_toast(&mut rt);
+    assert_eq!(*host.borrow(), ["dismiss", "open pi reyna"]);
+    assert!(!rt.state.showing);
+}
+
+#[test]
+fn a_press_on_a_toast_that_was_replaced_opens_nothing() {
+    let (mut rt, host) = toast_runtime(0);
+    let (x, y) = rt.find(&rt.state.key()).expect("the card");
+    rt.pointer_down(x, y);
+    rt.update(|s, _| (toast::SCENES[2].1)(s));
+    rt.frame(1.0 / 60.0);
+    rt.pointer_up(x, y);
+    rt.frame(1.0 / 60.0);
+    assert!(host.borrow().is_empty());
+    assert!(rt.state.showing);
+}
+
+fn press_toast(rt: &mut Runtime<ToastState>) {
+    let (x, y) = rt.find(&rt.state.key()).expect("the card");
+    rt.pointer_down(x, y);
+    rt.pointer_up(x, y);
+    rt.frame(1.0 / 60.0);
 }
 
 #[test]

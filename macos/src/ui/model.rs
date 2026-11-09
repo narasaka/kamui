@@ -13,6 +13,7 @@ use rune::{TextEdit, Tx};
 use url::Url;
 
 use super::onboarding::Tour;
+use super::toast::{Toast, Tone};
 use crate::core::prompt::{PromptKind, PromptReply, PromptResponder, SshPrompt};
 use crate::core::{KamuiError, Session, SessionState, client, destination};
 
@@ -35,6 +36,16 @@ pub trait Backend {
     fn save_onboarded(&self, done: bool);
     /// Brings the window forward, for a prompt or a message.
     fn show_window(&self);
+    /// Whether the window is open and in front, where a message can show
+    /// without taking over the screen.
+    fn window_in_front(&self) -> bool {
+        false
+    }
+    /// Shows a toast under the menu bar. Returns false when it can't, so the
+    /// window shows the message instead.
+    fn toast(&self, _toast: Toast) -> bool {
+        false
+    }
     /// The window closed; the app stays in the menu bar.
     fn window_closed(&self) {}
     fn quit(&self);
@@ -58,6 +69,19 @@ pub struct PendingPrompt {
     pub prompt: SshPrompt,
     pub responder: PromptResponder,
 }
+
+/// A session page a clicked toast opened before a refresh reported the
+/// session.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Opening {
+    pub destination: String,
+    /// Refreshes the page waits through for its session. One that started
+    /// before the host connected doesn't have it.
+    pub refreshes: u8,
+}
+
+/// How many refreshes a clicked toast's page waits for its session.
+const OPENING_REFRESHES: u8 = 3;
 
 /// A message the window shows until it is dismissed.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -131,6 +155,10 @@ pub struct Model {
     /// The front prompt's typed answer. Cleared whenever that prompt ends.
     pub answer: TextEdit,
     pub notes: Vec<Note>,
+    /// A session page shown for a clicked toast before any refresh has
+    /// reported the session, which a host that just connected isn't until
+    /// then. Leaving the page or closing the window ends it.
+    pub opening: Option<Opening>,
     /// Sign-in links waiting for a yes, in the order they arrived.
     pub sign_ins: Vec<SignIn>,
     pub tour: Option<Tour>,
@@ -166,6 +194,7 @@ impl Model {
             destination: TextEdit::new(""),
             answer: TextEdit::new(""),
             notes: Vec::new(),
+            opening: None,
             sign_ins: Vec::new(),
             tour: None,
             clock: 0.0,
@@ -250,6 +279,7 @@ impl Model {
     }
 
     pub fn apply(&mut self, snapshot: Snapshot) {
+        let answered = snapshot.sessions.is_some();
         if let Some(sessions) = snapshot.sessions {
             self.sessions = sessions;
         }
@@ -262,10 +292,22 @@ impl Model {
             self.page = self.default_page();
         }
         self.loaded = true;
+        if answered && let Some(mut opening) = self.opening.take() {
+            let waiting = self.page == Page::Session(opening.destination.clone())
+                && self.session(&opening.destination).is_none();
+            if waiting && opening.refreshes > 0 {
+                opening.refreshes -= 1;
+                self.opening = Some(opening);
+            }
+        }
         // A session that disappeared leaves its page.
         if let Page::Session(destination) = &self.page
             && self.session(destination).is_none()
             && !self.pending.contains(destination)
+            && self
+                .opening
+                .as_ref()
+                .is_none_or(|o| o.destination != *destination)
         {
             self.page = self.default_page();
         }
@@ -375,8 +417,21 @@ impl Model {
         match result {
             Ok(warnings) => {
                 self.failures.remove(destination);
+                let title = format!("Connected to {destination}");
                 if !warnings.is_empty() {
-                    self.note(&format!("Connected to {destination}"), &warnings.join("\n"));
+                    self.tell(
+                        &title,
+                        &warnings.join("\n"),
+                        Some(destination),
+                        Tone::Warning,
+                    );
+                } else if !self.in_front() {
+                    self.backend.toast(Toast {
+                        title,
+                        detail: "Its ports appear in the menu as services start.".into(),
+                        destination: Some(destination.to_owned()),
+                        tone: Tone::Connected,
+                    });
                 }
                 if let Some(tour) = &mut self.tour {
                     tour.connected(destination, self.clock, tx);
@@ -390,9 +445,11 @@ impl Model {
                     .as_ref()
                     .is_some_and(|t| t.host.as_deref() == Some(destination));
                 if !in_tour {
-                    self.note(
+                    self.tell(
                         &format!("Could not connect to {destination}"),
                         &error.to_string(),
+                        Some(destination),
+                        Tone::Failed,
                     );
                 }
             }
@@ -401,6 +458,14 @@ impl Model {
     }
 
     pub fn stop(&mut self, destination: &str) {
+        // A page waiting for this session to appear has nothing to wait for.
+        if self
+            .opening
+            .as_ref()
+            .is_some_and(|o| o.destination == destination)
+        {
+            self.opening = None;
+        }
         if self.in_flight(destination) {
             self.stopping.insert(destination.to_owned());
         }
@@ -438,6 +503,7 @@ impl Model {
             .cloned()
             .collect();
         self.stopping.extend(in_flight);
+        self.opening = None;
         let id = self.next_stop("");
         self.backend.stop_all(id);
     }
@@ -562,13 +628,73 @@ impl Model {
 
     // Messages.
 
+    /// Reports an error: in the window when it is in front, otherwise in a
+    /// toast.
     pub fn note(&mut self, title: &str, detail: &str) {
+        self.tell(title, detail, None, Tone::Failed);
+    }
+
+    /// Shows a message without the window taking over the screen: the
+    /// window shows it when it is in front or setup runs, and a toast under
+    /// the menu bar does otherwise. Without a toast, the window comes
+    /// forward.
+    fn tell(&mut self, title: &str, detail: &str, destination: Option<&str>, tone: Tone) {
+        let toast = Toast {
+            title: title.to_owned(),
+            detail: detail.to_owned(),
+            destination: destination.map(str::to_owned),
+            tone,
+        };
+        if !self.in_front() && self.backend.toast(toast) {
+            return;
+        }
+        self.push_note(title, detail);
+        self.backend.show_window();
+    }
+
+    fn push_note(&mut self, title: &str, detail: &str) {
         let note = Note {
             title: title.to_owned(),
             detail: detail.to_owned(),
         };
         if !self.notes.contains(&note) {
             self.notes.push(note);
+        }
+    }
+
+    /// The window closed; the app stays in the menu bar.
+    pub fn window_closed(&mut self) {
+        self.opening = None;
+        self.backend.window_closed();
+    }
+
+    fn in_front(&self) -> bool {
+        self.tour.is_some() || self.backend.window_in_front()
+    }
+
+    /// A toast was clicked, with the toasts that were waiting behind it.
+    /// The window opens on the clicked toast's session and shows each
+    /// warning or error in full, which a toast may have cut short. A host
+    /// that failed to connect has no session page, and one that just
+    /// connected may not have one until the next refresh.
+    pub fn toast_clicked(&mut self, toasts: Vec<Toast>) {
+        self.opening = None;
+        if let Some(destination) = toasts.first().and_then(|t| t.destination.clone())
+            && self.tour.is_none()
+        {
+            if self.destinations().contains(&destination) {
+                self.page = Page::Session(destination);
+            } else if toasts[0].tone != Tone::Failed {
+                // Connected, but no refresh has reported the session yet.
+                self.page = Page::Session(destination.clone());
+                self.opening = Some(Opening {
+                    destination,
+                    refreshes: OPENING_REFRESHES,
+                });
+            }
+        }
+        for toast in toasts.iter().filter(|t| t.tone != Tone::Connected) {
+            self.push_note(&toast.title, &toast.detail);
         }
         self.backend.show_window();
     }
