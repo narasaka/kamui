@@ -61,6 +61,9 @@ impl Backend for Recorder {
     fn save_onboarded(&self, done: bool) {
         self.record(format!("onboarded {done}"));
     }
+    fn save_recents(&self, recents: &[String]) {
+        self.record(format!("recents {}", recents.join(" ")));
+    }
     fn show_window(&self) {
         self.record("show".into());
     }
@@ -180,6 +183,14 @@ pub static SCENES: &[Scene] = &[
             t.choice = Some("reyna".into());
         }
     }),
+    ("connect-recents", |m| {
+        fresh(m);
+        m.recents = vec!["nathan@192.168.1.50".into()];
+        tour(m, Step::Connect);
+        if let Some(t) = &mut m.tour {
+            t.choice = Some("nathan@192.168.1.50".into());
+        }
+    }),
     ("connect-prompt", |m| {
         fresh(m);
         tour(m, Step::Connect);
@@ -269,6 +280,12 @@ pub static SCENES: &[Scene] = &[
         m.page = Page::Session("pi".into());
     }),
     ("connect-page", |m| m.page = Page::Connect),
+    ("connect-page-recents", |m| {
+        m.page = Page::Connect;
+        m.recents = ["nathan@192.168.1.50", "dev@build.example.com"]
+            .map(String::from)
+            .to_vec();
+    }),
     ("settings", |m| m.page = Page::Settings),
     ("empty", |m| {
         fresh(m);

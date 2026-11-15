@@ -564,6 +564,14 @@ fn connect_page(p: Paint, m: &Model) -> (El, Vec<El>) {
                 .default_button(),
         );
     let mut body = vec![section(p, "destination", "Any destination", vec![field])];
+    let recents = m.recent_destinations();
+    if !recents.is_empty() {
+        let rows = recents
+            .into_iter()
+            .map(|d| destination_row(p, m, &format!("recent-{d}"), d))
+            .collect();
+        body.push(section(p, "recents", "Recent", rows));
+    }
     if m.hosts.is_empty() {
         body.push(
             text("Hosts you add to ~/.ssh/config appear here.")
@@ -576,53 +584,51 @@ fn connect_page(p: Paint, m: &Model) -> (El, Vec<El>) {
         let rows = m
             .hosts
             .iter()
-            .map(|host| {
-                let session = m.session(host);
-                let control = if m.pending.contains(host) {
-                    p.pulse("pulse", 8.0)
-                } else if session.is_some_and(|s| s.state == SessionState::Connected) {
-                    let target = host.clone();
-                    Button::new("Show")
-                        .variant(ButtonVariant::Ghost)
-                        .control_size(ControlSize::Small)
-                        .on_press(move |m: &mut Model| m.page = Page::Session(target.clone()))
-                        .build(p.k)
-                } else {
-                    let target = host.clone();
-                    Button::new(if session.is_some() {
-                        "Reconnect"
-                    } else {
-                        "Connect"
-                    })
-                    .variant(ButtonVariant::Neutral)
-                    .control_size(ControlSize::Small)
-                    .disabled(m.executable.is_none())
-                    .on_press(move |m: &mut Model| {
-                        if let Some(destination) = m.connect(&target) {
-                            m.page = Page::Session(destination);
-                        }
-                    })
-                    .build(p.k)
-                };
-                let detail = session.map(|s| {
-                    if s.state == SessionState::Connected {
-                        "Connected".to_owned()
-                    } else {
-                        s.state.label().to_owned()
-                    }
-                });
-                setting_row(
-                    p,
-                    &format!("host-{host}"),
-                    host,
-                    detail.as_deref(),
-                    Some(control.key("action")),
-                )
-            })
+            .map(|host| destination_row(p, m, &format!("host-{host}"), host))
             .collect();
         body.push(section(p, "hosts", "From ~/.ssh/config", rows));
     }
     (head, body)
+}
+
+/// A destination on the Connect page, with the button that connects to it
+/// or shows its session.
+fn destination_row(p: Paint, m: &Model, key: &str, host: &str) -> El {
+    let session = m.session(host);
+    let control = if m.pending.contains(host) {
+        p.pulse("pulse", 8.0)
+    } else if session.is_some_and(|s| s.state == SessionState::Connected) {
+        let target = host.to_owned();
+        Button::new("Show")
+            .variant(ButtonVariant::Ghost)
+            .control_size(ControlSize::Small)
+            .on_press(move |m: &mut Model| m.page = Page::Session(target.clone()))
+            .build(p.k)
+    } else {
+        let target = host.to_owned();
+        Button::new(if session.is_some() {
+            "Reconnect"
+        } else {
+            "Connect"
+        })
+        .variant(ButtonVariant::Neutral)
+        .control_size(ControlSize::Small)
+        .disabled(m.executable.is_none())
+        .on_press(move |m: &mut Model| {
+            if let Some(destination) = m.connect(&target) {
+                m.page = Page::Session(destination);
+            }
+        })
+        .build(p.k)
+    };
+    let detail = session.map(|s| {
+        if s.state == SessionState::Connected {
+            "Connected".to_owned()
+        } else {
+            s.state.label().to_owned()
+        }
+    });
+    setting_row(p, key, host, detail.as_deref(), Some(control.key("action")))
 }
 
 pub fn choose_executable_button(p: Paint) -> El {

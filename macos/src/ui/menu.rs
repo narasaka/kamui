@@ -15,6 +15,7 @@ pub enum Action {
     OpenPort(u16),
     Connect(String),
     OtherDestination,
+    ClearRecents,
     Stop(String),
     StopAll,
     Settings,
@@ -177,21 +178,31 @@ pub fn items(m: &Model) -> Vec<Item> {
 
     items.push(Item::Separator);
     let can_connect = m.executable.is_some();
-    let mut connect: Vec<Item> = m
-        .hosts
-        .iter()
-        .map(|host| {
-            with(
-                action(host.clone(), Action::Connect(host.clone())),
-                can_connect && !m.is_busy(host),
-                None,
-            )
-        })
-        .collect();
-    if !connect.is_empty() {
+    let entry = |destination: &String| {
+        with(
+            action(destination.clone(), Action::Connect(destination.clone())),
+            can_connect && !m.is_busy(destination),
+            None,
+        )
+    };
+    let recents = m.recent_destinations();
+    let mut connect: Vec<Item> = Vec::new();
+    if !recents.is_empty() {
+        connect.push(Item::Label("Recent".into()));
+        connect.extend(recents.iter().map(|d| entry(d)));
+        connect.push(Item::Separator);
+    }
+    if !m.hosts.is_empty() {
+        if !recents.is_empty() {
+            connect.push(Item::Label("From ~/.ssh/config".into()));
+        }
+        connect.extend(m.hosts.iter().map(entry));
         connect.push(Item::Separator);
     }
     connect.push(action("Other Destination…", Action::OtherDestination));
+    if !recents.is_empty() {
+        connect.push(action("Clear Recent Destinations", Action::ClearRecents));
+    }
     items.push(Item::Submenu {
         title: "Connect".into(),
         symbol: None,
@@ -256,6 +267,7 @@ pub fn pick(m: &mut Model, action: Action, tx: &mut Tx) {
             }
             m.backend.show_window();
         }
+        Action::ClearRecents => m.clear_recents(),
         Action::Stop(destination) => m.stop(&destination),
         Action::StopAll => m.stop_all(),
         Action::Settings => {
