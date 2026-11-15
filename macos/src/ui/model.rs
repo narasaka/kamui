@@ -15,6 +15,7 @@ use url::Url;
 use super::onboarding::Tour;
 use super::toast::{Toast, Tone};
 use crate::core::prompt::{PromptKind, PromptReply, PromptResponder, SshPrompt};
+use crate::core::update::{self, Release};
 use crate::core::{KamuiError, Session, SessionState, client, destination};
 
 /// Blocking and native work the model asks for. Each call returns at once;
@@ -50,7 +51,48 @@ pub trait Backend {
     }
     /// The window closed; the app stays in the menu bar.
     fn window_closed(&self) {}
+    /// Asks GitHub whether a release newer than `current` exists. The answer
+    /// comes back in `Model::update_checked`.
+    fn check_for_updates(&self, _current: String) {}
+    /// Downloads, checks and installs `release` over the running app, then
+    /// relaunches it. A failure comes back in `Model::update_failed`.
+    fn install_update(&self, _release: Release) {}
+    fn save_automatic_update_checks(&self, _on: bool) {}
     fn quit(&self);
+}
+
+/// The app's own updates: whether a newer release exists and what the app
+/// is doing about it. Shown in the window and the menu, never as a system
+/// notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Updates {
+    /// Check at launch and every [`UPDATE_INTERVAL`].
+    pub automatic: bool,
+    /// A check is running; true when the user asked for it.
+    pub checking: Option<bool>,
+    /// A check answered during this launch.
+    pub checked: bool,
+    /// The newest release, when it is newer than this app.
+    pub available: Option<Release>,
+    pub installing: bool,
+    /// Why the last check the user asked for, or the last install, failed.
+    pub error: Option<String>,
+    /// The version whose banner the user put off with Later.
+    pub later: Option<String>,
+}
+
+impl Default for Updates {
+    fn default() -> Self {
+        Self {
+            automatic: true,
+            checking: None,
+            checked: false,
+            available: None,
+            installing: false,
+            error: None,
+            later: None,
+        }
+    }
 }
 
 /// What the main window shows beside its sidebar.
@@ -170,6 +212,7 @@ pub struct Model {
     /// Sign-in links waiting for a yes, in the order they arrived.
     pub sign_ins: Vec<SignIn>,
     pub tour: Option<Tour>,
+    pub updates: Updates,
     /// Seconds on the window's clock at the last frame.
     pub clock: f64,
 }
@@ -206,6 +249,7 @@ impl Model {
             opening: None,
             sign_ins: Vec::new(),
             tour: None,
+            updates: Updates::default(),
             clock: 0.0,
         }
     }
@@ -755,6 +799,94 @@ impl Model {
         self.backend.refresh();
     }
 
+    // Updates.
+
+    /// Whether this build can update itself: a release, not a development
+    /// build.
+    pub fn can_update(&self) -> bool {
+        update::updatable(&self.version)
+    }
+
+    /// Checks GitHub for a newer release. An automatic check does nothing
+    /// while automatic checks are off.
+    pub fn check_for_updates(&mut self, manual: bool) {
+        if !self.can_update()
+            || (!manual && !self.updates.automatic)
+            || self.updates.checking.is_some()
+            || self.updates.installing
+        {
+            return;
+        }
+        self.updates.checking = Some(manual);
+        if manual {
+            self.updates.error = None;
+        }
+        self.backend.check_for_updates(self.version.clone());
+    }
+
+    /// A check answered. A failed automatic check stays quiet and keeps what
+    /// an earlier check found.
+    pub fn update_checked(&mut self, result: Result<Option<Release>, String>) {
+        let manual = self.updates.checking.take() == Some(true);
+        match result {
+            Ok(release) => {
+                self.updates.checked = true;
+                self.updates.error = None;
+                self.updates.available = release;
+            }
+            Err(error) if manual => self.updates.error = Some(error),
+            Err(_) => {}
+        }
+    }
+
+    /// Installs the available release and relaunches.
+    pub fn install_update(&mut self) {
+        if self.updates.installing {
+            return;
+        }
+        let Some(release) = self.updates.available.clone() else {
+            return;
+        };
+        self.updates.installing = true;
+        self.updates.error = None;
+        self.backend.install_update(release);
+    }
+
+    /// Installing failed; the app that runs now is untouched.
+    pub fn update_failed(&mut self, error: String) {
+        self.updates.installing = false;
+        self.updates.error = Some(error);
+    }
+
+    /// Hides the window's banner for the available version. The menu and
+    /// Settings still offer it.
+    pub fn update_later(&mut self) {
+        self.updates.later = self.updates.available.as_ref().map(|r| r.version.clone());
+    }
+
+    /// Whether the window shows the update banner.
+    pub fn shows_update_banner(&self) -> bool {
+        self.updates.installing
+            || self.updates.available.as_ref().is_some_and(|release| {
+                self.updates.later.as_deref() != Some(release.version.as_str())
+            })
+    }
+
+    pub fn set_automatic_update_checks(&mut self, on: bool) {
+        self.updates.automatic = on;
+        self.backend.save_automatic_update_checks(on);
+        if on {
+            self.check_for_updates(false);
+        }
+    }
+
+    /// Opens the available release's notes on GitHub.
+    pub fn open_release_notes(&self, tx: &mut Tx) {
+        if let Some(release) = &self.updates.available {
+            let _ = tx.open_url(release.page.as_str());
+        }
+    }
+
     pub fn open_port(port: u16, tx: &mut Tx) {
         let _ = tx.open_url(&format!("http://localhost:{port}"));
     }
@@ -771,6 +903,9 @@ impl Model {
 
 /// How often the host polls status. The tour's port step polls faster.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(3);
+
+/// How often the app checks for a newer release while it runs.
+pub const UPDATE_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 /// The first line of a message, cut to fit a menu item.
 pub fn truncated(message: &str, limit: usize) -> String {

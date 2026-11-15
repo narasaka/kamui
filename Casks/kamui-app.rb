@@ -13,6 +13,9 @@ cask "kamui-app" do
   depends_on formula: "narasaka/tap/kamui"
   depends_on macos: :ventura
 
+  # The app updates itself from its window (ADR 0017).
+  auto_updates true
+
   app "Kamui.app"
 
   uninstall quit: "io.github.narasaka.kamui"

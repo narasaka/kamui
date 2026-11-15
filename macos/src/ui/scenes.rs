@@ -10,6 +10,7 @@ use super::model::{Backend, Model, Page};
 use super::onboarding::{Step, Tour};
 use super::toast::Toast;
 use crate::core::prompt::{PromptKind, PromptResponder, SshPrompt};
+use crate::core::update::Release;
 use crate::core::{Conflict, Session, SessionState};
 
 /// Records what the model asked for and does none of it.
@@ -84,6 +85,15 @@ impl Backend for Recorder {
     fn window_closed(&self) {
         self.record("closed".into());
     }
+    fn check_for_updates(&self, current: String) {
+        self.record(format!("check-updates {current}"));
+    }
+    fn install_update(&self, release: Release) {
+        self.record(format!("install-update {}", release.version));
+    }
+    fn save_automatic_update_checks(&self, on: bool) {
+        self.record(format!("automatic-updates {on}"));
+    }
     fn quit(&self) {
         self.record("quit".into());
     }
@@ -137,6 +147,18 @@ fn prompt(m: &mut Model, destination: &str, kind: PromptKind, text: &str) {
         },
         PromptResponder::detached(1),
     );
+}
+
+/// A release newer than the fixture's 1.4.0.
+pub fn release() -> Release {
+    Release {
+        version: "1.5.0".into(),
+        page: url::Url::parse("https://github.com/narasaka/kamui/releases/tag/v1.5.0").unwrap(),
+        archive: url::Url::parse(
+            "https://github.com/narasaka/kamui/releases/download/v1.5.0/Kamui_1.5.0_macos.zip",
+        )
+        .unwrap(),
+    }
 }
 
 fn tour(m: &mut Model, step: Step) {
@@ -357,6 +379,30 @@ pub static SCENES: &[Scene] = &[
             PromptKind::Secret,
             &format!("{text}\nVerification code: "),
         );
+    }),
+    ("update", |m| m.updates.available = Some(release())),
+    ("update-bundled", |m| {
+        m.executable = m.bundled.clone();
+        m.updates.available = Some(release());
+    }),
+    ("update-installing", |m| {
+        m.updates.available = Some(release());
+        m.updates.installing = true;
+    }),
+    ("update-failed", |m| {
+        m.updates.available = Some(release());
+        m.updates.error = Some(
+            "Kamui can't write to /Applications to update itself (Permission denied). Download the update instead."
+                .into(),
+        );
+    }),
+    ("settings-update", |m| {
+        m.page = Page::Settings;
+        m.updates.available = Some(release());
+    }),
+    ("settings-current", |m| {
+        m.page = Page::Settings;
+        m.updates.checked = true;
     }),
     ("note", |m| {
         m.notes.push(super::model::Note {

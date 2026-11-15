@@ -15,6 +15,7 @@ use crate::ui::model::RECENT_LIMIT;
 const EXECUTABLE_OVERRIDE: &str = "kamuiExecutablePath";
 const ONBOARDED: &str = "onboardingCompleted";
 const RECENTS: &str = "recentDestinations";
+const AUTOMATIC_UPDATE_CHECKS: &str = "automaticUpdateChecks";
 
 fn defaults() -> objc2::rc::Retained<NSUserDefaults> {
     NSUserDefaults::standardUserDefaults()
@@ -77,6 +78,16 @@ fn write_recents(defaults: &NSUserDefaults, recents: &[String]) {
     let array = NSArray::from_retained_slice(&values);
     // SAFETY: an NSArray of NSStrings is a valid property-list object.
     unsafe { defaults.setObject_forKey(Some(&array), &key) };
+}
+
+/// On unless the user turned it off.
+pub fn automatic_update_checks() -> bool {
+    let key = NSString::from_str(AUTOMATIC_UPDATE_CHECKS);
+    defaults().objectForKey(&key).is_none() || defaults().boolForKey(&key)
+}
+
+pub fn set_automatic_update_checks(on: bool) {
+    defaults().setBool_forKey(on, &NSString::from_str(AUTOMATIC_UPDATE_CHECKS));
 }
 
 pub fn launches_at_login() -> bool {

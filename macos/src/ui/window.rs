@@ -219,6 +219,8 @@ fn panel(p: Paint, m: &Model) -> El {
                 )
                 .transition(theme::arrives()),
         );
+    // Settings shows the same in its Updates section.
+    let update = (m.shows_update_banner() && m.page != Page::Settings).then(|| update_banner(p, m));
     let banner = m.problem.as_ref().map(|problem| problem_banner(p, problem));
     col()
         .key("panel-column")
@@ -227,7 +229,157 @@ fn panel(p: Paint, m: &Model) -> El {
         .min_w(0.0)
         .h_full()
         .child(surface)
+        .children(update)
         .children(banner)
+}
+
+fn small(label: &str, variant: ButtonVariant) -> Button {
+    Button::new(label)
+        .variant(variant)
+        .control_size(ControlSize::Small)
+}
+
+/// What an update does to sessions. They live in kamui's controller, so
+/// they outlast the restart; but an update of the bundled kamui changes its
+/// build, and the next connection replaces the controller (ADR 0007).
+pub(super) fn restart_note(m: &Model) -> &'static str {
+    if m.uses_bundled_executable() {
+        "Kamui restarts. Your sessions keep running until you next connect, which restarts Kamui's background controller and ends them."
+    } else {
+        "Kamui restarts; your sessions keep running."
+    }
+}
+
+/// What Settings and the banner say about the app's own updates.
+fn update_detail(m: &Model) -> String {
+    let updates = &m.updates;
+    match &updates.available {
+        Some(release) if updates.installing => format!(
+            "Downloading and installing Kamui {}. {}",
+            release.version,
+            restart_note(m)
+        ),
+        Some(release) => format!(
+            "Kamui {} is available. You have {}. {}",
+            release.version,
+            m.version,
+            restart_note(m)
+        ),
+        None if !m.can_update() => "Development builds don't update themselves.".into(),
+        None if updates.checking == Some(true) => "Checking for updates…".into(),
+        None if updates.checked => format!("Kamui {} is the latest version.", m.version),
+        None => format!("Kamui {}", m.version),
+    }
+}
+
+/// The update buttons: install, try again, or download from the release
+/// page when installing in place failed.
+fn update_actions(p: Paint, m: &Model) -> Vec<El> {
+    let mut actions = Vec::new();
+    if m.updates.installing || m.updates.available.is_none() {
+        return actions;
+    }
+    actions.push(if m.updates.error.is_some() {
+        small("Download", ButtonVariant::Neutral)
+            .help("Open this release on GitHub to download and install it yourself")
+            .on_press_tx(|m: &mut Model, tx: &mut Tx| m.open_release_notes(tx))
+            .build(p.k)
+            .key("download")
+    } else {
+        small("Release notes", ButtonVariant::Ghost)
+            .help("Open this release's notes on GitHub")
+            .on_press_tx(|m: &mut Model, tx: &mut Tx| m.open_release_notes(tx))
+            .build(p.k)
+            .key("notes")
+    });
+    actions.push(
+        small(
+            if m.updates.error.is_some() {
+                "Try again"
+            } else {
+                "Update and restart"
+            },
+            ButtonVariant::Contrast,
+        )
+        .on_press(Model::install_update)
+        .build(p.k)
+        .key("install"),
+    );
+    actions
+}
+
+/// A newer Kamui is out, or one is installing. Later hides it for that
+/// version; the menu and Settings still offer it.
+fn update_banner(p: Paint, m: &Model) -> El {
+    let version = m
+        .updates
+        .available
+        .as_ref()
+        .map_or(String::new(), |r| r.version.clone());
+    let title = if m.updates.installing {
+        format!("Installing Kamui {version}…")
+    } else if m.updates.error.is_some() {
+        format!("Kamui {version} could not be installed")
+    } else {
+        format!("Kamui {version} is available")
+    };
+    let detail = match &m.updates.error {
+        Some(error) if !m.updates.installing => error.clone(),
+        _ if m.updates.installing => restart_note(m).to_owned(),
+        _ => format!("You have {}. {}", m.version, restart_note(m)),
+    };
+    let light = if m.updates.installing {
+        p.pulse("pulse", 8.0)
+    } else {
+        p.dot("dot", p.k.c.info.fg, 8.0)
+    };
+    let lead = first_line(light, p.k.ty.ui_medium);
+    let mut actions = update_actions(p, m);
+    if !m.updates.installing {
+        actions.insert(
+            0,
+            small("Later", ButtonVariant::Ghost)
+                .help("Hide this until Kamui finds a newer version")
+                .on_press(Model::update_later)
+                .build(p.k)
+                .key("later"),
+        );
+    }
+    row()
+        .key("update")
+        .mr(8.0)
+        .mb(8.0)
+        .px(14.0)
+        .py(10.0)
+        .gap(10.0)
+        .center_y()
+        .radius(p.k.radius.md)
+        .fill(p.k.c.info.bg)
+        .border(p.hair, p.k.c.info.border)
+        .child(lead)
+        .child(
+            col()
+                .key("copy")
+                .grow(1.0)
+                .shrink()
+                .gap(2.0)
+                .child(
+                    text(title)
+                        .key("title")
+                        .font(p.k.ty.ui_medium)
+                        .color(p.text()),
+                )
+                .child(
+                    text(detail)
+                        .key("detail")
+                        .font(DESCRIPTION)
+                        .color(p.muted())
+                        .wrap()
+                        .selectable(true),
+                ),
+        )
+        .child(row().key("actions").gap(6.0).children(actions))
+        .transition(theme::arrives())
 }
 
 fn page_key(page: &Page) -> String {
@@ -238,12 +390,28 @@ fn page_key(page: &Page) -> String {
     }
 }
 
+/// Holds a banner's state light on its first line of `font` text, not the
+/// middle of a banner that wrapped text or buttons make taller.
+fn first_line(light: El, font: rune::TextStyle) -> El {
+    let line = if font.line_height > 0.0 {
+        font.line_height
+    } else {
+        font.size * 1.25
+    };
+    el().key("lead")
+        .w(8.0)
+        .h(line)
+        .center()
+        .self_start()
+        .child(light)
+}
+
 /// kamui itself failed: not found, a status it can't read, a controller
 /// from another build.
 pub fn problem_banner(p: Paint, problem: &str) -> El {
     row()
         .key("problem")
-        .mx(8.0)
+        .mr(8.0)
         .mb(8.0)
         .px(14.0)
         .py(10.0)
@@ -252,7 +420,7 @@ pub fn problem_banner(p: Paint, problem: &str) -> El {
         .radius(p.k.radius.md)
         .fill(p.k.c.warning.bg)
         .border(p.hair, p.k.c.warning.border)
-        .child(p.dot("dot", p.warning(), 8.0))
+        .child(first_line(p.dot("dot", p.warning(), 8.0), DESCRIPTION))
         .child(
             text(problem)
                 .key("text")
@@ -745,6 +913,7 @@ fn settings_page(p: Paint, m: &Model) -> (El, Vec<El>) {
                 .key("restart"),
         ),
     );
+    let updates = updates_section(p, m);
     let footer = col()
         .key("footer")
         .w_full()
@@ -765,8 +934,90 @@ fn settings_page(p: Paint, m: &Model) -> (El, Vec<El>) {
         );
     let body = vec![
         section(p, "general", "General", vec![login, setup]),
+        updates,
         section(p, "cli", "kamui command-line tool", vec![cli]),
         footer,
     ];
     (head, body)
+}
+
+fn updates_section(p: Paint, m: &Model) -> El {
+    let updates = &m.updates;
+    let mut status = col()
+        .key("status")
+        .w_full()
+        .px(16.0)
+        .py(12.0)
+        .gap(10.0)
+        .child(
+            text(update_detail(m))
+                .key("detail")
+                .font(p.k.ty.ui)
+                .color(p.text())
+                .wrap(),
+        );
+    if let Some(error) = updates.error.as_ref().filter(|_| !updates.installing) {
+        status = status.child(
+            text(error)
+                .key("error")
+                .font(DESCRIPTION)
+                .color(p.danger())
+                .wrap()
+                .selectable(true),
+        );
+    }
+    if updates.available.is_some() && !m.uses_bundled_executable() && m.executable.is_some() {
+        status = status.child(
+            row()
+                .key("cli-note")
+                .gap(6.0)
+                .center_y()
+                .child(
+                    text("The kamui in your terminal updates separately:")
+                        .key("text")
+                        .font(DESCRIPTION)
+                        .color(p.muted()),
+                )
+                .child(code(p, "brew", "brew upgrade narasaka/tap/kamui")),
+        );
+    }
+    let mut buttons = update_actions(p, m);
+    if updates.available.is_none() {
+        buttons.push(
+            small(
+                if updates.checking == Some(true) {
+                    "Checking…"
+                } else {
+                    "Check now"
+                },
+                ButtonVariant::Neutral,
+            )
+            .disabled(!m.can_update() || updates.checking.is_some())
+            .on_press(|m: &mut Model| m.check_for_updates(true))
+            .build(p.k)
+            .key("check"),
+        );
+    }
+    if !buttons.is_empty() {
+        status = status.child(row().key("buttons").gap(8.0).children(buttons));
+    }
+    let automatic = setting_row(
+        p,
+        "automatic",
+        "Check for updates automatically",
+        Some("Ask GitHub for a newer Kamui at launch and every few hours"),
+        Some(
+            Switch::new(updates.automatic)
+                .label("Check for updates automatically")
+                .hide_label()
+                .disabled(!m.can_update())
+                .on_toggle(|m: &mut Model| {
+                    let on = !m.updates.automatic;
+                    m.set_automatic_update_checks(on);
+                })
+                .build(p.k)
+                .key("switch"),
+        ),
+    );
+    section(p, "updates", "Updates", vec![status, automatic])
 }

@@ -1715,3 +1715,168 @@ fn a_plain_stop_that_fails_is_reported_at_once() {
     );
     assert_eq!(m.notes.len(), 1);
 }
+
+// Updates.
+
+/// The fixture as a release build, so it can update.
+fn release_build() -> (Model, Rc<Recorder>) {
+    let (mut m, recorder) = fixture();
+    m.version = "1.4.0".into();
+    (m, recorder)
+}
+
+#[test]
+fn automatic_update_checks_respect_the_setting_and_development_builds() {
+    let (mut m, recorder) = fixture();
+    m.check_for_updates(false);
+    m.check_for_updates(true);
+    assert!(
+        recorder.calls().is_empty(),
+        "a development build never checks"
+    );
+
+    let (mut m, recorder) = release_build();
+    m.check_for_updates(false);
+    m.check_for_updates(false);
+    assert_eq!(
+        recorder.calls(),
+        ["check-updates 1.4.0"],
+        "one check at a time"
+    );
+    m.update_checked(Ok(None));
+    assert!(m.updates.checked && m.updates.available.is_none());
+
+    m.set_automatic_update_checks(false);
+    m.check_for_updates(false);
+    assert_eq!(
+        recorder.calls(),
+        ["check-updates 1.4.0", "automatic-updates false"]
+    );
+    m.check_for_updates(true);
+    assert_eq!(recorder.calls().last().unwrap(), "check-updates 1.4.0");
+    m.update_checked(Ok(None));
+    m.set_automatic_update_checks(true);
+    assert_eq!(
+        recorder.calls()[3..],
+        ["automatic-updates true", "check-updates 1.4.0"],
+        "turning checks on checks now"
+    );
+}
+
+#[test]
+fn a_failed_automatic_check_stays_quiet_but_a_requested_one_says_why() {
+    let (mut m, _) = release_build();
+    m.check_for_updates(false);
+    m.update_checked(Ok(Some(scenes::release())));
+    m.check_for_updates(false);
+    m.update_checked(Err("offline".into()));
+    assert_eq!(m.updates.error, None);
+    assert_eq!(
+        m.updates.available.as_ref().map(|r| r.version.as_str()),
+        Some("1.5.0"),
+        "what an earlier check found stays"
+    );
+    m.check_for_updates(true);
+    m.update_checked(Err("offline".into()));
+    assert_eq!(m.updates.error.as_deref(), Some("offline"));
+}
+
+#[test]
+fn the_window_offers_an_available_update_until_later() {
+    let (mut m, recorder) = release_build();
+    m.updates.available = Some(scenes::release());
+    let mut rt = runtime(m);
+    settle(&mut rt);
+    assert!(rt.find("update").is_some(), "the banner shows");
+    assert!(
+        super::window::restart_note(&rt.state).ends_with("your sessions keep running."),
+        "a terminal kamui is untouched by the update"
+    );
+    rt.update(|m, _| m.executable = m.bundled.clone());
+    assert!(
+        super::window::restart_note(&rt.state).contains("until you next connect"),
+        "updating the bundled kamui ends sessions at the next connection, and says so"
+    );
+    press(&mut rt, "later");
+    assert!(rt.find("update").is_none(), "Later hides it");
+    assert!(recorder.calls().is_empty());
+    assert_eq!(
+        titles(&menu::items(&rt.state))[0],
+        "Update Available: Kamui 1.5.0…",
+        "the menu still offers it"
+    );
+}
+
+#[test]
+fn updating_from_the_banner_installs_and_a_failure_offers_a_download() {
+    let (mut m, recorder) = release_build();
+    m.updates.available = Some(scenes::release());
+    let mut rt = runtime(m);
+    settle(&mut rt);
+    press(&mut rt, "install");
+    assert_eq!(recorder.calls(), ["install-update 1.5.0"]);
+    assert!(rt.state.updates.installing);
+    assert!(
+        rt.find("install").is_none(),
+        "no second install while one runs"
+    );
+    assert_eq!(
+        titles(&menu::items(&rt.state))[0],
+        "Installing Kamui 1.5.0…"
+    );
+
+    rt.update(|m, _| m.update_failed("Kamui can't write to /Applications".into()));
+    settle(&mut rt);
+    assert!(rt.find("download").is_some());
+    press(&mut rt, "install");
+    assert_eq!(
+        recorder.calls(),
+        ["install-update 1.5.0", "install-update 1.5.0"],
+        "Try again installs again"
+    );
+}
+
+#[test]
+fn the_menu_opens_settings_on_an_update() {
+    let (mut m, recorder) = release_build();
+    m.updates.available = Some(scenes::release());
+    let items = menu::items(&m);
+    assert_eq!(
+        items[0],
+        Item::Action {
+            title: "Update Available: Kamui 1.5.0…".into(),
+            action: Action::ShowUpdate,
+            enabled: true,
+            checked: false,
+            key: None,
+        }
+    );
+    let mut rt = runtime(m);
+    assert_ne!(rt.state.page, Page::Settings);
+    rt.update(|m, tx| menu::pick(m, Action::ShowUpdate, tx));
+    assert_eq!(rt.state.page, Page::Settings);
+    assert_eq!(recorder.calls(), ["show"]);
+    settle(&mut rt);
+    assert!(
+        rt.find("update").is_none() && rt.find("updates").is_some(),
+        "Settings shows the update in its own section, without the banner"
+    );
+}
+
+#[test]
+fn settings_checks_now_and_turns_automatic_checks_off() {
+    let (mut m, recorder) = release_build();
+    m.page = Page::Settings;
+    m.updates.checked = true;
+    let mut rt = runtime(m);
+    settle(&mut rt);
+    press(&mut rt, "check");
+    assert_eq!(recorder.calls(), ["check-updates 1.4.0"]);
+    assert_eq!(rt.state.updates.checking, Some(true));
+    rt.update(|m, _| m.update_checked(Ok(None)));
+    settle(&mut rt);
+    assert!(rt.state.updates.automatic);
+    press(&mut rt, "automatic/switch");
+    assert!(!rt.state.updates.automatic);
+    assert_eq!(recorder.calls().last().unwrap(), "automatic-updates false");
+}
