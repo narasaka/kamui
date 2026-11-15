@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use rune::{Env, Runtime, TextEdit};
 
 use super::menu::{self, Action, Item};
-use super::model::{Model, Page, PendingPrompt, Snapshot};
+use super::model::{Model, Page, PendingPrompt, RECENT_LIMIT, Snapshot};
 use super::onboarding::{ADVANCE_BEAT, Step, Tour};
 use super::scenes::{self, Recorder};
 use super::toast::{self, Toast, ToastState, Tone};
@@ -890,6 +890,143 @@ fn the_connect_page_connects_and_shows_the_session() {
     assert!(recorder.calls().contains(&"connect work-box".to_owned()));
     assert_eq!(rt.state.page, Page::Session("work-box".into()));
     assert_eq!(rt.state.destination.text, "");
+}
+
+// Recent destinations.
+
+fn connected(rt: &mut Runtime<Model>, destination: &str) {
+    rt.update(|m, _| {
+        m.connect(destination);
+    });
+    rt.update(|m, tx| m.connect_finished(destination, Ok(Vec::new()), tx));
+}
+
+#[test]
+fn destinations_outside_ssh_config_are_remembered_most_recent_first() {
+    let (m, recorder) = fixture();
+    let mut rt = runtime(m);
+    connected(&mut rt, "nathan@192.168.1.50");
+    connected(&mut rt, "dev@build.example.com");
+    connected(&mut rt, "pi");
+    connected(&mut rt, "nathan@192.168.1.50");
+    assert_eq!(
+        rt.state.recents,
+        ["nathan@192.168.1.50", "dev@build.example.com"],
+        "a host from ~/.ssh/config is listed there already, and a repeat moves to the front"
+    );
+    assert_eq!(
+        recorder
+            .calls()
+            .iter()
+            .rfind(|c| c.starts_with("recents"))
+            .unwrap(),
+        "recents nathan@192.168.1.50 dev@build.example.com"
+    );
+}
+
+#[test]
+fn a_failed_destination_is_not_remembered() {
+    let (m, _) = fixture();
+    let mut rt = runtime(m);
+    rt.update(|m, _| {
+        m.connect("typo@nowhere");
+    });
+    rt.update(|m, tx| {
+        m.connect_finished(
+            "typo@nowhere",
+            Err(KamuiError::CommandFailed("timed out".into())),
+            tx,
+        )
+    });
+    assert!(rt.state.recents.is_empty());
+}
+
+#[test]
+fn the_recent_list_keeps_the_newest_few() {
+    let (m, _) = fixture();
+    let mut rt = runtime(m);
+    for i in 0..RECENT_LIMIT + 3 {
+        connected(&mut rt, &format!("user@10.0.0.{i}"));
+    }
+    assert_eq!(rt.state.recents.len(), RECENT_LIMIT);
+    assert_eq!(
+        rt.state.recents[0],
+        format!("user@10.0.0.{}", RECENT_LIMIT + 2)
+    );
+}
+
+#[test]
+fn a_recent_destination_added_to_ssh_config_is_listed_once() {
+    let (mut m, _) = fixture();
+    m.recents = vec!["nathan@192.168.1.50".into(), "lab".into()];
+    assert_eq!(m.recent_destinations(), ["nathan@192.168.1.50"]);
+}
+
+#[test]
+fn the_menu_offers_recent_destinations_and_clears_them() {
+    let (mut m, recorder) = fixture();
+    m.recents = vec!["nathan@192.168.1.50".into()];
+    let items = menu::items(&m);
+    let connect = submenu(&items, "Connect");
+    assert_eq!(
+        titles(connect),
+        [
+            "Recent",
+            "nathan@192.168.1.50",
+            "From ~/.ssh/config",
+            "reyna",
+            "lab",
+            "work-box",
+            "pi",
+            "Other Destination…",
+            "Clear Recent Destinations"
+        ]
+    );
+    let mut rt = runtime(m);
+    rt.update(|m, tx| menu::pick(m, Action::Connect("nathan@192.168.1.50".into()), tx));
+    assert!(
+        recorder
+            .calls()
+            .contains(&"connect nathan@192.168.1.50".to_owned())
+    );
+    rt.update(|m, tx| menu::pick(m, Action::ClearRecents, tx));
+    assert!(rt.state.recents.is_empty());
+    assert!(recorder.calls().contains(&"recents ".to_owned()));
+    let items = menu::items(&rt.state);
+    assert!(!titles(submenu(&items, "Connect")).contains(&"Recent".to_owned()));
+}
+
+#[test]
+fn the_connect_page_lists_recent_destinations() {
+    let (mut m, recorder) = fixture();
+    m.page = Page::Connect;
+    m.recents = vec!["nathan@192.168.1.50".into()];
+    let mut rt = runtime(m);
+    settle(&mut rt);
+    press(&mut rt, "recent-nathan@192.168.1.50/action");
+    assert!(
+        recorder
+            .calls()
+            .contains(&"connect nathan@192.168.1.50".to_owned()),
+        "{:?}",
+        recorder.calls()
+    );
+    assert_eq!(rt.state.page, Page::Session("nathan@192.168.1.50".into()));
+}
+
+#[test]
+fn setup_offers_recent_destinations() {
+    let (mut m, recorder) = first_run();
+    m.recents = vec!["nathan@192.168.1.50".into()];
+    m.tour = Some(Tour::at(Step::Connect));
+    let mut rt = runtime(m);
+    press(&mut rt, "host-nathan@192.168.1.50");
+    press(&mut rt, "connect");
+    assert!(
+        recorder
+            .calls()
+            .contains(&"connect nathan@192.168.1.50".to_owned())
+    );
 }
 
 #[test]

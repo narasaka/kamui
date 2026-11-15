@@ -34,6 +34,8 @@ pub trait Backend {
     fn set_launch_at_login(&self, enabled: bool) -> Result<bool, String>;
     fn save_executable_override(&self, path: Option<String>);
     fn save_onboarded(&self, done: bool);
+    /// Stores the recent destinations, most recent first.
+    fn save_recents(&self, recents: &[String]);
     /// Brings the window forward, for a prompt or a message.
     fn show_window(&self);
     /// Whether the window is open and in front, where a message can show
@@ -79,6 +81,9 @@ pub struct Opening {
     /// before the host connected doesn't have it.
     pub refreshes: u8,
 }
+
+/// How many recent destinations the app keeps.
+pub const RECENT_LIMIT: usize = 8;
 
 /// How many refreshes a clicked toast's page waits for its session.
 const OPENING_REFRESHES: u8 = 3;
@@ -139,6 +144,9 @@ pub struct Model {
     pub prompts: Vec<PendingPrompt>,
     pub prompt_serial: u64,
     pub hosts: Vec<String>,
+    /// Destinations outside ~/.ssh/config this app connected to, most
+    /// recent first, so they can be picked again.
+    pub recents: Vec<String>,
     pub problem: Option<String>,
     pub executable: Option<PathBuf>,
     pub bundled: Option<PathBuf>,
@@ -182,6 +190,7 @@ impl Model {
             prompts: Vec::new(),
             prompt_serial: 0,
             hosts: Vec::new(),
+            recents: Vec::new(),
             problem: None,
             executable: None,
             bundled: None,
@@ -224,6 +233,31 @@ impl Model {
                 .cloned(),
         );
         all
+    }
+
+    /// Recent destinations that ~/.ssh/config doesn't already list.
+    pub fn recent_destinations(&self) -> Vec<&String> {
+        self.recents
+            .iter()
+            .filter(|d| !self.hosts.contains(d))
+            .collect()
+    }
+
+    /// Puts a destination outside ~/.ssh/config at the front of the recent
+    /// list and stores the list.
+    fn remember(&mut self, destination: &str) {
+        if self.hosts.iter().any(|h| h == destination) {
+            return;
+        }
+        self.recents.retain(|d| d != destination);
+        self.recents.insert(0, destination.to_owned());
+        self.recents.truncate(RECENT_LIMIT);
+        self.backend.save_recents(&self.recents);
+    }
+
+    pub fn clear_recents(&mut self) {
+        self.recents.clear();
+        self.backend.save_recents(&self.recents);
     }
 
     /// Whether connecting to `destination` now would do nothing.
@@ -417,6 +451,7 @@ impl Model {
         match result {
             Ok(warnings) => {
                 self.failures.remove(destination);
+                self.remember(destination);
                 let title = format!("Connected to {destination}");
                 if !warnings.is_empty() {
                     self.tell(

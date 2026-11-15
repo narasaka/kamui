@@ -723,9 +723,19 @@ fn connect_page(p: Paint, m: &Model, tour: &Tour) -> El {
     // While a connection is under way the picker folds to the host it is
     // connecting to, which leaves room for a prompt.
     let active = host.filter(|_| pending || asking || tour.advance_at.is_some());
+    // Recent destinations outside ~/.ssh/config come first.
+    let pickable: Vec<&String> = m
+        .recent_destinations()
+        .into_iter()
+        .chain(m.hosts.iter())
+        .collect();
     let shown: Vec<&String> = match active {
-        Some(active) => m.hosts.iter().filter(|h| h.as_str() == active).collect(),
-        None => m.hosts.iter().collect(),
+        Some(active) => pickable
+            .iter()
+            .copied()
+            .filter(|h| h.as_str() == active)
+            .collect(),
+        None => pickable.clone(),
     };
     let mut rows: Vec<El> = shown
         .into_iter()
@@ -742,7 +752,7 @@ fn connect_page(p: Paint, m: &Model, tour: &Tour) -> El {
             .transition(theme::roll(4.0))
         })
         .collect();
-    if let Some(active) = active.filter(|a| !m.hosts.iter().any(|h| h == a)) {
+    if let Some(active) = active.filter(|a| !pickable.iter().any(|h| h == a)) {
         rows.push(host_row(p, active, true, false));
     }
     let list = (!rows.is_empty()).then(|| {
@@ -769,7 +779,7 @@ fn connect_page(p: Paint, m: &Model, tour: &Tour) -> El {
             .transition(theme::roll(4.0))
             .child(
                 TextInput::new(&m.destination)
-                    .placeholder(if m.hosts.is_empty() {
+                    .placeholder(if pickable.is_empty() {
                         "user@host"
                     } else {
                         "Or type a destination, like user@host"

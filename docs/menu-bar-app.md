@@ -21,8 +21,8 @@ setup in its window:
    Mac's;
 2. a check of the `kamui` it found, the hosts in `~/.ssh/config`, and whether
    Kamui opens at login;
-3. connecting to a host you pick, or any destination you type, answering SSH
-   prompts on the page;
+3. connecting to a host you pick, a recent destination, or any destination
+   you type, answering SSH prompts on the page;
 4. that host's ports appearing as services start, each with **Open**;
 5. where Kamui lives afterwards: the menu bar.
 
@@ -36,7 +36,8 @@ From the menu bar icon you can:
 
 - see each session, its mirrored ports, ports held elsewhere, and errors;
 - open a mirrored port, such as `http://localhost:3000`, in your browser;
-- connect to a `Host` from `~/.ssh/config`, or choose **Other Destination…**;
+- connect to a `Host` from `~/.ssh/config`, a recent destination, or choose
+  **Other Destination…**;
 - reconnect a session that is unavailable or needs authentication;
 - stop one session or all of them;
 - open the Kamui window or its settings, and choose whether Kamui opens at
@@ -60,11 +61,21 @@ state, its mirrored ports with **Open**, which opens them in your default
 browser, ports held elsewhere on your Mac, ports it doesn't mirror, and its full
 errors, with **Reconnect** and **Stop**. For a browser whose `localhost` is the
 host's, run `kamui browser` (see the [CLI reference](cli.md)). **Connect** (⌘N) connects to any destination or a
-host from `~/.ssh/config`, and **Settings** (⌘,) holds the login item, the
+host from `~/.ssh/config` or the recent list, and **Settings** (⌘,) holds the login item, the
 `kamui` executable, and **Run setup again**.
 
 While the window is open, Kamui has a Dock icon so ⌘Tab reaches it. Closing the
 window (⌘W) removes the icon; Kamui stays in the menu bar.
+
+## Recent destinations
+
+Kamui remembers the last 8 destinations you connected to from the app that
+aren't a `Host` in `~/.ssh/config`, such as `nathan@192.168.1.50`, and lists
+them under **Recent** in the menu's **Connect** submenu, on the **Connect**
+page, and in setup. A destination joins the list only after it connects. The
+list lives in the app's preferences and holds only destinations, never
+answers to SSH prompts. **Clear Recent Destinations** in the **Connect**
+submenu empties it.
 
 ## When SSH needs to ask you something
 

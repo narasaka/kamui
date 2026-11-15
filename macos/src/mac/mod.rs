@@ -248,6 +248,10 @@ impl Backend for MacBackend {
         native::set_onboarded(done);
     }
 
+    fn save_recents(&self, recents: &[String]) {
+        native::set_recents(recents);
+    }
+
     fn show_window(&self) {
         self.handle.set_dock_icon(true);
         self.handle.open();
@@ -378,6 +382,7 @@ pub fn run() {
         let mut m = Model::new(backend);
         m.bundled = bundled;
         m.executable_override = override_path;
+        m.recents = native::recents();
         m.launches_at_login = native::launches_at_login();
         m.version = native::version().unwrap_or(m.version);
         m
