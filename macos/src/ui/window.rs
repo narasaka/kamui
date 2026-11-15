@@ -328,11 +328,12 @@ fn update_banner(p: Paint, m: &Model) -> El {
         _ if m.updates.installing => restart_note(m).to_owned(),
         _ => format!("You have {}. {}", m.version, restart_note(m)),
     };
-    let lead = if m.updates.installing {
+    let light = if m.updates.installing {
         p.pulse("pulse", 8.0)
     } else {
         p.dot("dot", p.k.c.info.fg, 8.0)
     };
+    let lead = first_line(light, p.k.ty.ui_medium);
     let mut actions = update_actions(p, m);
     if !m.updates.installing {
         actions.insert(
@@ -346,7 +347,7 @@ fn update_banner(p: Paint, m: &Model) -> El {
     }
     row()
         .key("update")
-        .mx(8.0)
+        .mr(8.0)
         .mb(8.0)
         .px(14.0)
         .py(10.0)
@@ -389,12 +390,28 @@ fn page_key(page: &Page) -> String {
     }
 }
 
+/// Holds a banner's state light on its first line of `font` text, not the
+/// middle of a banner that wrapped text or buttons make taller.
+fn first_line(light: El, font: rune::TextStyle) -> El {
+    let line = if font.line_height > 0.0 {
+        font.line_height
+    } else {
+        font.size * 1.25
+    };
+    el().key("lead")
+        .w(8.0)
+        .h(line)
+        .center()
+        .self_start()
+        .child(light)
+}
+
 /// kamui itself failed: not found, a status it can't read, a controller
 /// from another build.
 pub fn problem_banner(p: Paint, problem: &str) -> El {
     row()
         .key("problem")
-        .mx(8.0)
+        .mr(8.0)
         .mb(8.0)
         .px(14.0)
         .py(10.0)
@@ -403,7 +420,7 @@ pub fn problem_banner(p: Paint, problem: &str) -> El {
         .radius(p.k.radius.md)
         .fill(p.k.c.warning.bg)
         .border(p.hair, p.k.c.warning.border)
-        .child(p.dot("dot", p.warning(), 8.0))
+        .child(first_line(p.dot("dot", p.warning(), 8.0), DESCRIPTION))
         .child(
             text(problem)
                 .key("text")
