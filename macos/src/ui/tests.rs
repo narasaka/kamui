@@ -1788,6 +1788,15 @@ fn the_window_offers_an_available_update_until_later() {
     let mut rt = runtime(m);
     settle(&mut rt);
     assert!(rt.find("update").is_some(), "the banner shows");
+    assert!(
+        super::window::restart_note(&rt.state).ends_with("your sessions keep running."),
+        "a terminal kamui is untouched by the update"
+    );
+    rt.update(|m, _| m.executable = m.bundled.clone());
+    assert!(
+        super::window::restart_note(&rt.state).contains("until you next connect"),
+        "updating the bundled kamui ends sessions at the next connection, and says so"
+    );
     press(&mut rt, "later");
     assert!(rt.find("update").is_none(), "Later hides it");
     assert!(recorder.calls().is_empty());

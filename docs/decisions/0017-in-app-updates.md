@@ -92,9 +92,12 @@ uses a terminal `kamui`, Settings says so next to an available update.
 ## Consequences
 
 Users see new versions without a terminal and update in one click. Sessions
-survive the restart because they live in the controller (ADR 0003). The next
-command from the new bundled CLI replaces a controller that the old bundle
-started, as ADR 0015 describes for upgrades.
+survive the restart because they live in the controller (ADR 0003). When the
+app uses its bundled CLI, though, the update changes that CLI's build: the app
+then reports a controller from another build, and the next connection
+replaces it and ends its sessions, as ADR 0007 and ADR 0015 describe for
+upgrades. The banner and Settings say so before the update starts. A user of
+a terminal `kamui` keeps the same CLI, so nothing changes for their sessions.
 
 The app trusts GitHub's API for the version number and download link, and
 code signing for the bytes. A compromised GitHub account could point at an

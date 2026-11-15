@@ -381,6 +381,10 @@ pub static SCENES: &[Scene] = &[
         );
     }),
     ("update", |m| m.updates.available = Some(release())),
+    ("update-bundled", |m| {
+        m.executable = m.bundled.clone();
+        m.updates.available = Some(release());
+    }),
     ("update-installing", |m| {
         m.updates.available = Some(release());
         m.updates.installing = true;

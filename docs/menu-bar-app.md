@@ -93,7 +93,10 @@ one is out, the app says so itself and never sends a system notification:
 **Update and restart** downloads the release's app, checks that it is Kamui
 signed by Kamui's developer, puts it where the running app is, and reopens
 Kamui. Your sessions keep running, because they live in Kamui's background
-controller. If Kamui can't replace itself, for example because its folder
+controller. When the app uses its own copy of `kamui`, the update changes that
+copy's build, so the app then reports a controller from another build and
+your next connection replaces it, ending its sessions; the update says so
+before you start it. If Kamui can't replace itself, for example because its folder
 isn't writable, the banner says why and offers **Download**, which opens the
 release on GitHub.
 

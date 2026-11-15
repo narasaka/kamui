@@ -239,17 +239,31 @@ fn small(label: &str, variant: ButtonVariant) -> Button {
         .control_size(ControlSize::Small)
 }
 
+/// What an update does to sessions. They live in kamui's controller, so
+/// they outlast the restart; but an update of the bundled kamui changes its
+/// build, and the next connection replaces the controller (ADR 0007).
+pub(super) fn restart_note(m: &Model) -> &'static str {
+    if m.uses_bundled_executable() {
+        "Kamui restarts. Your sessions keep running until you next connect, which restarts Kamui's background controller and ends them."
+    } else {
+        "Kamui restarts; your sessions keep running."
+    }
+}
+
 /// What Settings and the banner say about the app's own updates.
 fn update_detail(m: &Model) -> String {
     let updates = &m.updates;
     match &updates.available {
         Some(release) if updates.installing => format!(
-            "Downloading and installing Kamui {}. Kamui restarts when it is done; your sessions keep running.",
-            release.version
+            "Downloading and installing Kamui {}. {}",
+            release.version,
+            restart_note(m)
         ),
         Some(release) => format!(
-            "Kamui {} is available. You have {}. Updating restarts Kamui; your sessions keep running.",
-            release.version, m.version
+            "Kamui {} is available. You have {}. {}",
+            release.version,
+            m.version,
+            restart_note(m)
         ),
         None if !m.can_update() => "Development builds don't update themselves.".into(),
         None if updates.checking == Some(true) => "Checking for updates…".into(),
@@ -311,13 +325,8 @@ fn update_banner(p: Paint, m: &Model) -> El {
     };
     let detail = match &m.updates.error {
         Some(error) if !m.updates.installing => error.clone(),
-        _ if m.updates.installing => {
-            "Kamui restarts when it is done; your sessions keep running.".to_owned()
-        }
-        _ => format!(
-            "You have {}. Updating restarts Kamui; your sessions keep running.",
-            m.version
-        ),
+        _ if m.updates.installing => restart_note(m).to_owned(),
+        _ => format!("You have {}. {}", m.version, restart_note(m)),
     };
     let lead = if m.updates.installing {
         p.pulse("pulse", 8.0)
