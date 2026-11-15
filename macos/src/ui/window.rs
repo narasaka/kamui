@@ -978,7 +978,7 @@ fn updates_section(p: Paint, m: &Model) -> El {
                         .font(DESCRIPTION)
                         .color(p.muted()),
                 )
-                .child(code(p, "brew", "brew upgrade narasaka/tap/kamui")),
+                .child(code(p, "brew", "brew upgrade narasaka/tap/kamui-cli")),
         );
     }
     let mut buttons = update_actions(p, m);

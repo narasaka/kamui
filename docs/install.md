@@ -27,19 +27,42 @@ remove the `kamui` executable from the Go binary directory.
 
 ## Homebrew installation
 
-Homebrew and Linuxbrew can build the current tagged release from source:
+On macOS 13 or later, install the signed and notarized menu bar app together
+with the `kamui` command:
 
 ```sh
 brew install narasaka/tap/kamui
 ```
 
-Upgrade or uninstall it with:
+The cask puts `kamui` on your `PATH` as a link to the copy inside
+`Kamui.app`, so the app and your terminal always run the same build. The app
+works without the terminal, and the terminal works without opening the app.
+
+The app tells you when a new version is out and updates itself from its
+window; see [updates](menu-bar-app.md#updates). Because the terminal's
+`kamui` is the app's own copy, that updates both.
+
+On Linux, or to install only the CLI on macOS, Homebrew can build the current
+tagged release from source:
+
+```sh
+brew install narasaka/tap/kamui-cli
+```
+
+Install one or the other. If both are installed, the formula's `kamui` stays
+on `PATH` and the cask skips its link.
+
+Upgrade or uninstall with:
 
 ```sh
 brew update
-brew upgrade narasaka/tap/kamui
-brew uninstall kamui
+brew upgrade narasaka/tap/kamui      # or narasaka/tap/kamui-cli
+brew uninstall --cask kamui          # or: brew uninstall kamui-cli
 ```
+
+Homebrew may ask you to trust the tap first with `brew trust narasaka/tap`.
+Uninstalling does not stop sessions, and uninstalling the cask removes
+`kamui` too, so run `kamui stop --all` first if you want them stopped.
 
 The next controller-backed invocation after an upgrade authenticates the
 resident controller, compares its protocol/build identity with the new
@@ -47,36 +70,37 @@ executable, gracefully replaces a stale controller, and retries the command.
 The requested destination is recreated automatically; other in-memory sessions
 must be started again.
 
-## macOS menu bar app
+### Upgrading from v0.0.16 or earlier
 
-On macOS 13 or later, install the signed and notarized menu bar app with:
+Through v0.0.16, `kamui` was the CLI formula, and the menu bar app was the
+`kamui-app` cask, which installed that formula too. From v0.1.0, `kamui` is the
+cask with the app and the CLI, and the CLI-only formula is `kamui-cli`. The old
+formula never receives another upgrade, and it keeps the `kamui` command on
+your `PATH` until you remove it.
 
-```sh
-brew install --cask narasaka/tap/kamui-app
-```
-
-The app contains its own `kamui`, so it works on its own. The cask also
-installs the `kamui` formula, so `kamui` works in your terminal, and the app
-uses that executable when it finds it.
-
-The app tells you when a new version is out and updates itself from its
-window; see [updates](menu-bar-app.md#updates). That updates the app only.
-The cask doesn't pin the formula's version, so upgrade the terminal's `kamui`
-as well, or upgrade both with Homebrew to keep them on the same release:
+If you had the menu bar app, `brew update` moves `kamui-app` to the `kamui`
+cask. Then replace the old formula with the cask's own `kamui`:
 
 ```sh
-brew upgrade narasaka/tap/kamui narasaka/tap/kamui-app
+brew update
+brew uninstall --formula --ignore-dependencies kamui
+brew reinstall --cask narasaka/tap/kamui
 ```
 
-Uninstall the app with:
+If you had only the CLI, remove the old formula and install the new name you
+want. On macOS, `kamui` adds the app; `kamui-cli` is the CLI alone and the only
+choice on Linux:
 
 ```sh
-brew uninstall --cask kamui-app
+brew update
+brew uninstall --formula kamui
+brew install narasaka/tap/kamui       # or: brew install narasaka/tap/kamui-cli
 ```
 
-Homebrew may ask you to trust the tap first with `brew trust narasaka/tap`.
-Uninstalling the app does not stop sessions. Run `kamui stop --all` first if
-you want them stopped.
+Afterwards, `kamui --version` reports the new release. With the cask,
+`readlink "$(command -v kamui)"` points inside `Kamui.app`.
+
+## Building the menu bar app
 
 To build the app from source, run `make macos-app` with Go and
 [rustup](https://rustup.rs) installed; `macos/rust-toolchain.toml` picks the
@@ -132,9 +156,9 @@ openssl pkcs12 -export -in identity.pem -certfile DeveloperIDG2CA.pem \
 base64 -i developer-id-macos.p12 | tr -d '\n'
 ```
 
-When none of these secrets exist, the release skips the app with a warning.
-When only some exist, the release fails. The workflow never publishes an
-unsigned app.
+The release fails before building anything when any of these secrets is
+missing, because `brew install narasaka/tap/kamui` installs the app. The
+workflow never publishes an unsigned app.
 
 After the release commit is on `main`, push an annotated semantic-version tag:
 
@@ -145,14 +169,14 @@ git push origin v0.0.2
 
 The workflow validates that the tag belongs to `main`, runs all checks, builds
 Darwin and Linux binaries for ARM64 and AMD64, publishes them with
-`checksums.txt`, and updates the Homebrew formula. With the signing secrets, it
-also builds the universal menu bar app with a `kamui` that has the same
-release identity as the formula, signs both with the hardened runtime,
-notarizes and staples it, publishes `Kamui_VERSION_macos.zip`, and writes
-`Casks/kamui-app.rb` to the tap from this repository's `Casks/kamui-app.rb`
-template. The cask records the archive's SHA-256; `checksums.txt` covers only
-the CLI binaries. Do not update the published formula manually
-before the tag exists.
+`checksums.txt`. It also builds the universal menu bar app with a `kamui` that
+has the same release identity as the formula, signs both with the hardened
+runtime, notarizes and staples it, and publishes `Kamui_VERSION_macos.zip`.
+Finally, `scripts/update-homebrew-tap.rb` writes `kamui-cli.rb` and
+`Casks/kamui.rb` to the tap from this repository's `Formula/kamui-cli.rb` and
+`Casks/kamui.rb` templates. The cask records the archive's SHA-256;
+`checksums.txt` covers only the CLI binaries. Do not update the published
+formula or cask manually before the tag exists.
 
 Maintainers can reproduce all release binaries with:
 

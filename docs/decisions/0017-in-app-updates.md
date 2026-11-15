@@ -1,6 +1,6 @@
 # ADR 0017: Let the menu bar app update itself, and say so only in the app
 
-- Status: accepted
+- Status: accepted; superseded in part by ADR 0018
 - Date: 2026-11-14
 - Amends: ADR 0016
 

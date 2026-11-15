@@ -9,7 +9,7 @@ set -f
 # Each line names a job group and the path globs it covers. In these globs,
 # * also matches /.
 filters='
-go             *.go go.mod go.sum .golangci* Makefile cmd/* internal/* integration/* scripts/* Casks/* macos/Resources/*
+go             *.go go.mod go.sum .golangci* Makefile cmd/* internal/* integration/* scripts/* Casks/* Formula/* macos/Resources/*
 macos-app      macos/* Makefile scripts/build-macos-app.sh Casks/* go.mod go.sum cmd/* internal/*
 browser-smoke  go.mod go.sum cmd/* internal/* integration/*
 site           site/* docs/* *.md
@@ -20,7 +20,7 @@ ci_paths='.github/* scripts/ci-jobs.sh'
 
 # Paths that no job checks. Any other path that no filter covers selects every
 # group, so new kinds of files are checked until they are given a filter.
-unchecked_paths='assets/* Formula/* LICENSE .gitignore'
+unchecked_paths='assets/* LICENSE .gitignore'
 
 matches() {
   local path="$1" pattern
