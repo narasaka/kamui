@@ -70,20 +70,35 @@ executable, gracefully replaces a stale controller, and retries the command.
 The requested destination is recreated automatically; other in-memory sessions
 must be started again.
 
-### Moving from the old package names
+### Upgrading from v0.0.16 or earlier
 
-Through v0.0.16, `kamui` was the CLI formula and the app was the `kamui-app`
-cask. `brew update` moves a `kamui-app` installation to the `kamui` cask, but
-the old formula stays installed and keeps the `kamui` link. Remove it, then
-install the package you want:
+Through v0.0.16, `kamui` was the CLI formula, and the menu bar app was the
+`kamui-app` cask, which installed that formula too. From v0.1.0, `kamui` is the
+cask with the app and the CLI, and the CLI-only formula is `kamui-cli`. The old
+formula never receives another upgrade, and it keeps the `kamui` command on
+your `PATH` until you remove it.
+
+If you had the menu bar app, `brew update` moves `kamui-app` to the `kamui`
+cask. Then replace the old formula with the cask's own `kamui`:
 
 ```sh
 brew update
 brew uninstall --formula --ignore-dependencies kamui
-brew reinstall --cask narasaka/tap/kamui   # you had kamui-app
-brew install narasaka/tap/kamui            # you had only the CLI, on macOS
-brew install narasaka/tap/kamui-cli        # you had only the CLI, on Linux
+brew reinstall --cask narasaka/tap/kamui
 ```
+
+If you had only the CLI, remove the old formula and install the new name you
+want. On macOS, `kamui` adds the app; `kamui-cli` is the CLI alone and the only
+choice on Linux:
+
+```sh
+brew update
+brew uninstall --formula kamui
+brew install narasaka/tap/kamui       # or: brew install narasaka/tap/kamui-cli
+```
+
+Afterwards, `kamui --version` reports the new release. With the cask,
+`readlink "$(command -v kamui)"` points inside `Kamui.app`.
 
 ## Building the menu bar app
 
