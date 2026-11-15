@@ -41,7 +41,8 @@ From the menu bar icon you can:
 - reconnect a session that is unavailable or needs authentication;
 - stop one session or all of them;
 - open the Kamui window or its settings, and choose whether Kamui opens at
-  login.
+  login;
+- update Kamui when a new version is out.
 
 The icon dims while nothing is connected or a connection is starting, and
 shows a dot when a session or an SSH prompt needs your attention.
@@ -76,6 +77,30 @@ page, and in setup. A destination joins the list only after it connects. The
 list lives in the app's preferences and holds only destinations, never
 answers to SSH prompts. **Clear Recent Destinations** in the **Connect**
 submenu empties it.
+
+## Updates
+
+Kamui checks GitHub for a new release when it opens and every six hours. When
+one is out, the app says so itself and never sends a system notification:
+
+- the menu starts with **Update Available: Kamui X.Y.Z…**, which opens
+  Settings;
+- the window shows a banner with **Update and restart**, **Release notes**,
+  and **Later**, which hides the banner for that version;
+- Settings › Updates shows the same, with **Check now** and a switch for
+  automatic checks.
+
+**Update and restart** downloads the release's app, checks that it is Kamui
+signed by Kamui's developer, puts it where the running app is, and reopens
+Kamui. Your sessions keep running, because they live in Kamui's background
+controller. If Kamui can't replace itself, for example because its folder
+isn't writable, the banner says why and offers **Download**, which opens the
+release on GitHub.
+
+The update replaces the app and its bundled `kamui`, not a `kamui` installed
+in your terminal. When the app uses your terminal's `kamui`, Settings reminds
+you to run `brew upgrade narasaka/tap/kamui` as well. Development builds don't
+check for updates.
 
 ## When SSH needs to ask you something
 

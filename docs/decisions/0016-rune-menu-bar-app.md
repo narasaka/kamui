@@ -1,6 +1,6 @@
 # ADR 0016: Rebuild the menu bar app in Rust with Rune, with a window and first-run setup
 
-- Status: accepted
+- Status: accepted; amended by ADR 0017
 - Date: 2026-11-06
 - Supersedes in part: ADR 0012, ADR 0015
 

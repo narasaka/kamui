@@ -26,8 +26,9 @@ use rune::{
 use rune_mac::notify;
 
 use crate::core::prompt::{PromptHandler, PromptReply, PromptResponder, SshPrompt};
+use crate::core::update::{self, Release, Updater};
 use crate::core::{KamuiClient, KamuiError, locator, ssh_config};
-use crate::ui::model::{Backend, Model, POLL_INTERVAL, Snapshot};
+use crate::ui::model::{Backend, Model, POLL_INTERVAL, Snapshot, UPDATE_INTERVAL};
 use crate::ui::toast::{self, Toast, ToastState};
 
 /// What background threads need to run kamui.
@@ -48,6 +49,10 @@ struct Shared {
 }
 
 impl Shared {
+    fn updater(&self) -> Updater {
+        Updater::new(self.context.lock().unwrap().environment.clone())
+    }
+
     fn client(&self) -> Option<KamuiClient> {
         let context = self.context.lock().unwrap();
         context
@@ -282,8 +287,56 @@ impl Backend for MacBackend {
         self.handle.set_dock_icon(false);
     }
 
+    fn check_for_updates(&self, current: String) {
+        let (handle, updater) = (self.handle.clone(), self.shared.updater());
+        std::thread::spawn(move || {
+            let result = updater.check(&current);
+            update(&handle, move |m, _| m.update_checked(result));
+        });
+    }
+
+    fn install_update(&self, release: Release) {
+        let (handle, updater) = (self.handle.clone(), self.shared.updater());
+        std::thread::spawn(move || {
+            let installed = std::env::current_exe()
+                .ok()
+                .and_then(|exe| update::bundle_of(&exe))
+                .ok_or_else(|| "Kamui isn't running from Kamui.app, so it can't update itself. Download the update instead.".to_owned())
+                .and_then(|app| updater.install(&release, &app).map(|()| app));
+            match installed {
+                Ok(app) => relaunch(&handle, &app),
+                Err(error) => update(&handle, move |m, _| m.update_failed(error)),
+            }
+        });
+    }
+
+    fn save_automatic_update_checks(&self, on: bool) {
+        native::set_automatic_update_checks(on);
+    }
+
     fn quit(&self) {
         self.handle.quit();
+    }
+}
+
+/// Opens the updated app once this one has quit, then quits. Sessions keep
+/// running in kamui's controller.
+fn relaunch(handle: &AppHandle<Model>, app: &std::path::Path) {
+    let (program, arguments) = update::relaunch_command(std::process::id(), app);
+    let started = std::process::Command::new(program)
+        .args(arguments)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match started {
+        Ok(_) => handle.quit(),
+        Err(error) => {
+            let error = format!(
+                "Kamui updated, but could not restart itself ({error}). Quit Kamui and open it again."
+            );
+            update(handle, move |m, _| m.update_failed(error));
+        }
     }
 }
 
@@ -385,6 +438,7 @@ pub fn run() {
         m.recents = native::recents();
         m.launches_at_login = native::launches_at_login();
         m.version = native::version().unwrap_or(m.version);
+        m.updates.automatic = native::automatic_update_checks();
         m
     });
 
@@ -403,6 +457,15 @@ pub fn run() {
                 locator::login_environment(&crate::core::runner::ProcessRunner, &base);
             shared.context.lock().unwrap().environment = environment;
             shared.ready.store(true, Ordering::SeqCst);
+            // Checks for a newer Kamui now and every few hours; the model
+            // skips them while automatic checks are off.
+            let updates = handle.clone();
+            std::thread::spawn(move || {
+                loop {
+                    update(&updates, |m, _| m.check_for_updates(false));
+                    std::thread::sleep(UPDATE_INTERVAL);
+                }
+            });
             loop {
                 refresh(&handle, &shared);
                 std::thread::sleep(POLL_INTERVAL);

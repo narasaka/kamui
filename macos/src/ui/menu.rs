@@ -20,6 +20,8 @@ pub enum Action {
     StopAll,
     Settings,
     ToggleLogin,
+    /// Opens Settings on the available update.
+    ShowUpdate,
     Quit,
 }
 
@@ -82,6 +84,17 @@ pub fn indicator(m: &Model) -> Indicator {
 
 pub fn items(m: &Model) -> Vec<Item> {
     let mut items = Vec::new();
+    if let Some(release) = &m.updates.available {
+        items.push(if m.updates.installing {
+            Item::Label(format!("Installing Kamui {}…", release.version))
+        } else {
+            action(
+                format!("Update Available: Kamui {}…", release.version),
+                Action::ShowUpdate,
+            )
+        });
+        items.push(Item::Separator);
+    }
     if let Some(problem) = &m.problem {
         items.push(action(truncated(problem, 70), Action::ShowWindow));
         items.push(Item::Separator);
@@ -270,7 +283,7 @@ pub fn pick(m: &mut Model, action: Action, tx: &mut Tx) {
         Action::ClearRecents => m.clear_recents(),
         Action::Stop(destination) => m.stop(&destination),
         Action::StopAll => m.stop_all(),
-        Action::Settings => {
+        Action::Settings | Action::ShowUpdate => {
             if m.tour.is_none() {
                 m.page = Page::Settings;
             }

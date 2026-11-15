@@ -1,5 +1,6 @@
 //! Everything the app does that needs no window: running kamui, reading its
-//! status, relaying SSH prompts, finding the CLI, and reading ~/.ssh/config.
+//! status, relaying SSH prompts, finding the CLI, reading ~/.ssh/config, and
+//! updating the app.
 //! None of it touches AppKit, so it runs and tests anywhere.
 
 pub mod client;
@@ -11,6 +12,7 @@ pub mod prompt;
 pub mod runner;
 pub mod ssh_config;
 mod status;
+pub mod update;
 
 pub use client::KamuiClient;
 pub use error::KamuiError;
