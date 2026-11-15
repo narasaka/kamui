@@ -67,8 +67,8 @@ as plain `ssh` does.
 ## Install
 
 ```sh
-brew install narasaka/tap/kamui             # CLI
-brew install --cask narasaka/tap/kamui-app  # menu bar app + CLI
+brew install narasaka/tap/kamui      # macOS: menu bar app + CLI
+brew install narasaka/tap/kamui-cli  # CLI only, macOS or Linux
 go install github.com/narasaka/kamui/cmd/kamui@latest
 ```
 

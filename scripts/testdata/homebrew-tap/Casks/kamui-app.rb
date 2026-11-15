@@ -1,9 +1,6 @@
-# Template for the menu bar app cask. The release workflow fills in the version
-# and archive checksum and publishes it to
-# https://github.com/narasaka/homebrew-tap as Casks/kamui-app.rb.
 cask "kamui-app" do
-  version "0.0.0"
-  sha256 "0000000000000000000000000000000000000000000000000000000000000000"
+  version "0.0.16"
+  sha256 "bd752e71603ce1f928cbb1f50d126c4637adddc37359527819b2cf0af5ae2154"
 
   url "https://github.com/narasaka/kamui/releases/download/v#{version}/Kamui_#{version}_macos.zip"
   name "Kamui"
@@ -12,9 +9,6 @@ cask "kamui-app" do
 
   depends_on formula: "narasaka/tap/kamui"
   depends_on macos: :ventura
-
-  # The app updates itself from its window (ADR 0017).
-  auto_updates true
 
   app "Kamui.app"
 

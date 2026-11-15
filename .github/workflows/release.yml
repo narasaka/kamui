@@ -49,6 +49,27 @@ jobs:
             exit 1
           fi
 
+      # `brew install narasaka/tap/kamui` installs the app, so every release
+      # needs a signed and notarized one.
+      - name: Require menu bar app signing credentials
+        env:
+          MACOS_DEVELOPER_ID_P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
+          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        shell: bash
+        run: |
+          names=(MACOS_DEVELOPER_ID_P12 MACOS_DEVELOPER_ID_P12_PASSWORD APPLE_NOTARY_KEY_P8 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID)
+          missing=()
+          for name in "${names[@]}"; do
+            [[ -n "${!name}" ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "missing menu bar app release secrets: ${missing[*]}; see docs/install.md" >&2
+            exit 1
+          fi
+
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
@@ -67,34 +88,8 @@ jobs:
       - name: Check menu bar app
         run: make check-macos-app
 
-      - name: Check menu bar app signing credentials
-        id: app_signing
-        env:
-          MACOS_DEVELOPER_ID_P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
-          MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
-          APPLE_NOTARY_KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8 }}
-          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
-          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
-        shell: bash
-        run: |
-          names=(MACOS_DEVELOPER_ID_P12 MACOS_DEVELOPER_ID_P12_PASSWORD APPLE_NOTARY_KEY_P8 APPLE_NOTARY_KEY_ID APPLE_NOTARY_ISSUER_ID)
-          missing=()
-          for name in "${names[@]}"; do
-            [[ -n "${!name}" ]] || missing+=("$name")
-          done
-          if (( ${#missing[@]} == ${#names[@]} )); then
-            echo "::warning::Skipping the menu bar app because Developer ID signing and notarization secrets are not configured."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          elif (( ${#missing[@]} > 0 )); then
-            echo "missing menu bar app release secrets: ${missing[*]}" >&2
-            exit 1
-          else
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          fi
-
       - name: Import Developer ID certificate
         id: keychain
-        if: steps.app_signing.outputs.enabled == 'true'
         env:
           MACOS_DEVELOPER_ID_P12: ${{ secrets.MACOS_DEVELOPER_ID_P12 }}
           MACOS_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.MACOS_DEVELOPER_ID_P12_PASSWORD }}
@@ -124,7 +119,6 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
       - name: Build, sign, and notarize menu bar app
-        if: steps.app_signing.outputs.enabled == 'true'
         env:
           VERSION: ${{ steps.release.outputs.version }}
           KAMUI_BUILD_COMMIT: ${{ steps.release.outputs.commit }}
@@ -168,59 +162,19 @@ jobs:
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
           path: homebrew-tap
 
-      - name: Update Homebrew formula
+      - name: Update Homebrew formula and cask
         env:
           VERSION: ${{ steps.release.outputs.version }}
-          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
-          BUILD_DATE: ${{ steps.release.outputs.build_date }}
+          KAMUI_BUILD_COMMIT: ${{ steps.release.outputs.commit }}
+          KAMUI_BUILD_DATE: ${{ steps.release.outputs.build_date }}
         shell: bash
         run: |
-          source_url="https://github.com/narasaka/kamui/archive/refs/tags/v${VERSION}.tar.gz"
           curl --fail --location --retry 5 --retry-all-errors \
-            "$source_url" --output source.tar.gz
+            "https://github.com/narasaka/kamui/archive/refs/tags/v${VERSION}.tar.gz" \
+            --output source.tar.gz
           source_sha="$(shasum -a 256 source.tar.gz | awk '{print $1}')"
-          export SOURCE_URL="$source_url" SOURCE_SHA="$source_sha"
-          ruby <<'RUBY'
-          path = "homebrew-tap/kamui.rb"
-          formula = File.read(path)
-          replacements = {
-            /^  url ".*"$/ => %(  url "#{ENV.fetch("SOURCE_URL")}"),
-            /^  sha256 ".*"$/ => %(  sha256 "#{ENV.fetch("SOURCE_SHA")}"),
-            %r{version\.Commit=[^ ]+} => "version.Commit=#{ENV.fetch("RELEASE_COMMIT")}",
-            %r{version\.BuildDate=[^\"]+} => "version.BuildDate=#{ENV.fetch("BUILD_DATE")}",
-          }
-          replacements.each do |pattern, replacement|
-            matches = formula.scan(pattern).length
-            abort "expected one #{pattern.inspect} in #{path}, found #{matches}" unless matches == 1
-            formula.sub!(pattern, replacement)
-          end
-          formula.gsub!(/^  depends_on :macos\n/, "")
-          File.write(path, formula)
-          RUBY
-
-      - name: Update Homebrew cask
-        if: steps.app_signing.outputs.enabled == 'true'
-        env:
-          VERSION: ${{ steps.release.outputs.version }}
-        shell: bash
-        run: |
-          archive="dist/Kamui_${VERSION}_macos.zip"
-          APP_SHA="$(shasum -a 256 "$archive" | awk '{print $1}')"
-          export APP_SHA
-          mkdir -p homebrew-tap/Casks
-          ruby <<'RUBY'
-          cask = File.read("Casks/kamui-app.rb").sub(/\A(#.*\n)+/, "")
-          replacements = {
-            /^  version ".*"$/ => %(  version "#{ENV.fetch("VERSION")}"),
-            /^  sha256 ".*"$/ => %(  sha256 "#{ENV.fetch("APP_SHA")}"),
-          }
-          replacements.each do |pattern, replacement|
-            matches = cask.scan(pattern).length
-            abort "expected one #{pattern.inspect} in Casks/kamui-app.rb, found #{matches}" unless matches == 1
-            cask.sub!(pattern, replacement)
-          end
-          File.write("homebrew-tap/Casks/kamui-app.rb", cask)
-          RUBY
+          scripts/update-homebrew-tap.rb homebrew-tap "$VERSION" "$source_sha" \
+            "dist/Kamui_${VERSION}_macos.zip"
 
       - name: Publish Homebrew formula and cask
         working-directory: homebrew-tap
@@ -228,10 +182,7 @@ jobs:
           VERSION: ${{ steps.release.outputs.version }}
         shell: bash
         run: |
-          git add kamui.rb
-          if [[ -f Casks/kamui-app.rb ]]; then
-            git add Casks/kamui-app.rb
-          fi
+          git add --all
           if git diff --cached --quiet; then
             echo "The tap already describes v${VERSION}"
             exit 0

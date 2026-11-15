@@ -23,29 +23,35 @@ func TestBrowserCompatibilityWorkflowAvoidsRemovedHomebrewOptions(t *testing.T) 
 	}
 }
 
-func TestReleaseWorkflowPublishesMenuBarAppOnlyWhenSigned(t *testing.T) {
+// `brew install narasaka/tap/kamui` installs the menu bar app, so a release
+// must not publish the tap without a signed app.
+func TestReleaseWorkflowRequiresSignedMenuBarApp(t *testing.T) {
 	workflow := readRepositoryFile(t, ".github", "workflows", "release.yml")
-	const guard = "if: steps.app_signing.outputs.enabled == 'true'"
-	guarded := 0
+	var requirement string
 	for _, step := range strings.Split(workflow, "\n      - ")[1:] {
-		if !strings.Contains(step, "build-macos-app.sh") && !strings.Contains(step, "homebrew-tap/Casks/kamui-app.rb") {
-			continue
+		if strings.Contains(step, "if:") && !strings.HasPrefix(step, "name: Remove signing keychain") {
+			t.Fatalf("release step is conditional, so a release can skip part of the tap:\n%s", step)
 		}
-		if !strings.Contains(step, guard) {
-			t.Fatalf("release step can publish an unsigned menu bar app without %q:\n%s", guard, step)
+		if strings.HasPrefix(step, "name: Require menu bar app signing credentials") {
+			requirement = step
 		}
-		guarded++
 	}
-	if guarded != 2 {
-		t.Fatalf("found %d guarded menu bar app release steps, want build and cask steps", guarded)
+	if !strings.Contains(requirement, "exit 1") {
+		t.Fatal("release workflow does not fail without the menu bar app signing secrets")
+	}
+	if strings.Index(workflow, "name: Require menu bar app signing credentials") > strings.Index(workflow, "run: make check") {
+		t.Fatal("release workflow checks signing secrets only after the slow checks")
 	}
 	if !strings.Contains(workflow, "KAMUI_CODESIGN_IDENTITY: ${{ steps.keychain.outputs.identity }}") {
 		t.Fatal("release workflow does not sign the menu bar app with the imported Developer ID identity")
 	}
+	if !strings.Contains(workflow, "scripts/update-homebrew-tap.rb homebrew-tap") {
+		t.Fatal("release workflow does not write the tap with scripts/update-homebrew-tap.rb")
+	}
 }
 
 func TestCaskTemplateMatchesMenuBarAppBundle(t *testing.T) {
-	cask := readRepositoryFile(t, "Casks", "kamui-app.rb")
+	cask := readRepositoryFile(t, "Casks", "kamui.rb")
 	infoPlist := readRepositoryFile(t, "macos", "Resources", "Info.plist")
 	buildScript := readRepositoryFile(t, "scripts", "build-macos-app.sh")
 
@@ -64,10 +70,24 @@ func TestCaskTemplateMatchesMenuBarAppBundle(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(mustGetwd(t)), "macos", "Resources", "AppIcon.icns")); err != nil {
 		t.Fatalf("app icon is missing: %v", err)
 	}
-	for _, want := range []string{`app "Kamui.app"`, `quit: "` + bundleID + `"`, bundleID + `.plist"`, `depends_on formula: "narasaka/tap/kamui"`} {
+	if !strings.Contains(buildScript, `"${app}/Contents/Helpers/kamui"`) {
+		t.Fatal("build-macos-app.sh does not bundle kamui where the cask links it from")
+	}
+	for _, want := range []string{
+		`cask "kamui" do`,
+		`app "Kamui.app"`,
+		`binary "#{appdir}/Kamui.app/Contents/Helpers/kamui"`,
+		`quit: "` + bundleID + `"`,
+		bundleID + `.plist"`,
+	} {
 		if !strings.Contains(cask, want) {
 			t.Fatalf("cask template missing %q", want)
 		}
+	}
+	// The cask carries its own kamui; depending on the formula would install a
+	// second, separately versioned copy.
+	if strings.Contains(cask, "depends_on formula:") {
+		t.Fatal("cask template depends on a formula")
 	}
 }
 

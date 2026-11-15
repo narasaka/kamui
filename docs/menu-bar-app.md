@@ -3,7 +3,7 @@
 Kamui's menu bar app runs on macOS 13 or later.
 
 ```sh
-brew install --cask narasaka/tap/kamui-app
+brew install narasaka/tap/kamui
 ```
 
 You can use Kamui entirely from the menu bar, entirely from a terminal, or
@@ -135,14 +135,14 @@ anything else. When your terminal has a `kamui`, the app uses that one instead,
 so both use the same build. It looks on your login shell's `PATH`, then in the
 usual install locations, then uses its own copy, and shows its choice in
 Settings, where you can **Choose…** another one, **Use bundled kamui**, or go
-back to **Find automatically**. The Homebrew cask also installs the `kamui`
-formula, so `kamui` works in your terminal right away.
+back to **Find automatically**. The Homebrew cask links that copy onto your
+`PATH`, so `kamui` works in your terminal right away and both run one build.
 
 Two different builds would keep replacing each other's controller and
-dropping sessions. The copy inside a release of the app and the formula from
-the same release count as one build. When the app notices a controller from
-another build, for example right after `brew upgrade`, it says so in the menu
-and the window instead of replacing it. Connecting again replaces it, which
+dropping sessions. The copy inside a release of the app and the `kamui-cli`
+formula from the same release count as one build. When the app notices a
+controller from another build, for example right after `brew upgrade`, it says
+so in the menu and the window instead of replacing it. Connecting again replaces it, which
 ends that controller's other sessions.
 
 If the `kamui` the app finds is older than the app and can't pass prompts to
