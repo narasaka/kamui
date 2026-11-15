@@ -117,7 +117,9 @@ pub fn parse(output: &[u8], marker: &str) -> Option<HashMap<String, String>> {
 
 /// Returns an explicit executable when one is configured, otherwise the first
 /// kamui on PATH or in a common installation directory, otherwise the bundled
-/// copy. An explicit choice never falls back.
+/// copy. An explicit choice never falls back. A kamui found on PATH that links
+/// to the bundled copy, as the Homebrew cask installs it (ADR 0018), is the
+/// bundled copy: it updates with the app.
 pub fn locate(
     override_path: Option<&str>,
     environment: &HashMap<String, String>,
@@ -136,10 +138,20 @@ pub fn locate(
     {
         let path = PathBuf::from(format!("{}/kamui", expand_tilde(directory, environment)));
         if is_executable(&path) {
-            return Some(path);
+            return Some(match bundled {
+                Some(bundled) if same_file(&path, bundled) => bundled.to_path_buf(),
+                _ => path,
+            });
         }
     }
     bundled.filter(|b| is_executable(b)).map(Path::to_path_buf)
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
 }
 
 fn expand_tilde(path: &str, environment: &HashMap<String, String>) -> String {
@@ -226,6 +238,34 @@ mod tests {
             "an explicit choice never falls back"
         );
         assert_eq!(locate(None, &environment, Some(&bundled), |_| false), None);
+    }
+
+    #[test]
+    fn treats_a_link_to_the_bundled_copy_as_the_bundled_copy() {
+        let root = tempfile::tempdir().unwrap();
+        let bundled = bundled_executable(&root.path().join("Kamui.app"));
+        std::fs::create_dir_all(bundled.parent().unwrap()).unwrap();
+        std::fs::write(&bundled, "").unwrap();
+        let bin = root.path().join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        std::os::unix::fs::symlink(&bundled, bin.join("kamui")).unwrap();
+        let environment = env(&[("PATH", bin.to_str().unwrap()), ("HOME", "/nonexistent")]);
+        let exists = |p: &Path| p == bundled || p == bin.join("kamui");
+
+        assert_eq!(
+            locate(None, &environment, Some(&bundled), exists),
+            Some(bundled.clone())
+        );
+        assert_eq!(
+            locate(
+                bin.join("kamui").to_str(),
+                &environment,
+                Some(&bundled),
+                exists
+            ),
+            Some(bin.join("kamui")),
+            "an explicit choice is used as given"
+        );
     }
 
     #[test]

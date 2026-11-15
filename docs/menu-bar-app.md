@@ -100,10 +100,11 @@ before you start it. If Kamui can't replace itself, for example because its fold
 isn't writable, the banner says why and offers **Download**, which opens the
 release on GitHub.
 
-The update replaces the app and its bundled `kamui`, not a `kamui` installed
-in your terminal. When the app uses your terminal's `kamui`, Settings reminds
-you to run `brew upgrade narasaka/tap/kamui` as well. Development builds don't
-check for updates.
+The update replaces the app and its bundled `kamui`. With the Homebrew cask,
+your terminal's `kamui` is a link to that copy, so it updates too. A `kamui`
+installed separately, such as the `kamui-cli` formula, does not: when the app
+uses one, Settings reminds you to run `brew upgrade narasaka/tap/kamui-cli` as
+well. Development builds don't check for updates.
 
 ## When SSH needs to ask you something
 
@@ -136,7 +137,8 @@ so both use the same build. It looks on your login shell's `PATH`, then in the
 usual install locations, then uses its own copy, and shows its choice in
 Settings, where you can **Choose…** another one, **Use bundled kamui**, or go
 back to **Find automatically**. The Homebrew cask links that copy onto your
-`PATH`, so `kamui` works in your terminal right away and both run one build.
+`PATH`, so `kamui` works in your terminal right away and both run one build;
+the app counts that link as its own copy.
 
 Two different builds would keep replacing each other's controller and
 dropping sessions. The copy inside a release of the app and the `kamui-cli`

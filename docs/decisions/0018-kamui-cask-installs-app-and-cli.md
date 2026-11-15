@@ -23,6 +23,11 @@ On macOS, `brew install narasaka/tap/kamui` installs the menu bar app and the
 CLI. `kamui` is a cask. Its `binary` stanza links
 `Kamui.app/Contents/Helpers/kamui` onto `PATH`, so the terminal and the app
 run the same file and upgrade together. It no longer depends on a formula.
+The cask keeps `auto_updates true` from ADR 0017; an in-app update replaces
+the bundle, so it updates the linked CLI as well. The app treats a `kamui` on
+`PATH` that resolves to its bundled copy as that copy, so it doesn't remind
+cask users to upgrade a separate CLI, and it warns them that the update
+changes the CLI's build. The reminder for a separate CLI names `kamui-cli`.
 
 The CLI-only formula is `kamui-cli`. Linux users and macOS users who don't want
 the app install it. It still builds from the tagged source with the release's
